@@ -113,7 +113,7 @@ not make the exit code honest. `rloop gate` is useful as the step your workflow
 actually runs:
 
 ```yaml
-- run: npx rloop gate --json    # exit 1 = broken, exit 2 = no verdict
+- run: npx @tezer/rloop gate --json   # exit 1 = broken, exit 2 = no verdict
 ```
 
 **Merge queues answer by refusing.** The loop is: push, wait for CI, read the
@@ -139,6 +139,23 @@ and resolved, a real PR merged, and both refusal paths (unresolved thread,
 non-allowlisted base branch) confirmed to block an actual merge attempt.
 
 ## Install
+
+```bash
+npm install -g @tezer/rloop
+rloop check
+```
+
+Or without installing:
+
+```bash
+npx @tezer/rloop check
+```
+
+The package is scoped because npm's typosquatting filter rejects the bare name
+`rloop` as too close to `rlp` and `plop`. The **command is still `rloop`** — a
+`bin` name is independent of the package it ships in.
+
+From a clone:
 
 ```bash
 npm install && npm run build

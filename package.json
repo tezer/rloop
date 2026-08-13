@@ -1,5 +1,5 @@
 {
-  "name": "rloop",
+  "name": "@tezer/rloop",
   "version": "0.1.0",
   "description": "Evidence-based merge gate for AI-authored PRs. Exit codes lie; prove green with output.",
   "keywords": [
@@ -21,6 +21,9 @@
   },
   "type": "module",
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
   },
