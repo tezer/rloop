@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "Evidence-based merge gate for AI-authored PRs. Exit codes lie; prove green with output.",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=20"
   },
