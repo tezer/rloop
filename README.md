@@ -125,7 +125,8 @@ instead of one round trip through a runner and a reviewer.
 The case rloop was actually built for is narrower than either: **no CI, no
 branch protection, and an agent authoring the PR**, where the gate runs on the
 same machine as the work and is the only thing between generated code and the
-base branch.
+base branch. Running on that machine is also its main weakness — see
+[What it cannot do](#what-it-cannot-do).
 
 ## Status
 
@@ -264,6 +265,45 @@ tool's own failure detection should be tested.
 - **A gate with no patterns is rejected**, because it would pass on exit code
   alone. A gate with only `forbid` patterns is allowed (`tsc -b` prints nothing
   on success) but warns — it can only catch failure modes you already know.
+
+## What it cannot do
+
+A tool whose argument is "prove it, do not assume it" owes you the list of
+things it does not prove.
+
+**The verdict comes from a machine you trust, not a neutral one.** This is the
+real thing CI does better, and no amount of care here closes it. A hosted runner
+starts from a fresh checkout every time; rloop runs in whatever state your
+working copy is actually in. A live example, from gating a repo whose root
+`npm test` covers only one workspace: the gate went red on 18 test files that
+had nothing to do with the branch. The cause was stale compiled `.js` left in
+`src/` by a tsconfig that used to emit in place — invisible to the branch, fatal
+to the run, and impossible on CI. The dirty-worktree void and the SHA binding
+narrow this; they do not remove it. If you need a verdict a third party can
+audit, you need a runner, not this.
+
+**`forbid` fails open.** `require` patterns fail closed — a marker that stops
+printing fails the gate, which is the safe direction. `forbid` has the opposite
+bias: if your test runner renames `FAIL` in a minor release, the pattern quietly
+stops matching and takes a failure mode with it. Nothing detects that. Treat
+`forbid` as a second line, never the only one, and pin the tool versions your
+markers were written against.
+
+**It cannot tell a real suite from a hollow one.** `Tests 1800 passed` and
+`Tests 1 passed` both satisfy `[1-9][0-9]* passed`. Requiring a non-zero count
+catches a glob that broke completely; it says nothing about one that silently
+narrowed. If that matters, assert a floor on the count in your own script and
+gate on its output.
+
+**A green run proves the gates you configured passed** — not that they were the
+right gates. rloop has no idea what your PR touched or which suite covers it.
+Deriving that from the diff sounds appealing and is a trap: the coupling between
+changed files and affected suites is not the directory tree. Name every suite
+unconditionally and pay the wall-clock.
+
+**There is no audit trail anyone else can read.** Logs land in `log_dir` on the
+machine that ran them. Nothing is signed, published, or attested. "The gate was
+green" is a claim, backed by a file you could have edited.
 
 ## Results carry evidence
 
