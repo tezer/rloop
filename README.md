@@ -9,10 +9,12 @@ $ echo $?
 0
 ```
 
-That build failed. npm 9 masks a failing child script's exit code for
-`npm run … --workspace=<w>` — it prints `npm ERR!` and returns `0`. Every
-`cmd && merge` pipeline built on that exit code is merging broken commits and
-reporting success.
+That build failed. npm 9 masks a failing child script's exit code for **any
+package that is a workspace member** — it prints `npm ERR!` and returns `0`.
+Not just `--workspace=<w>`: a root script wrapping one masks too, and so does
+`cd packages/thing && npm run build`. You cannot `cd` your way out of it.
+Every `cmd && merge` pipeline built on that exit code is merging broken commits
+and reporting success.
 
 `rloop` is a merge gate that refuses to believe exit codes. Green is proven by
 **output**: positive end-of-run markers that only print on real success, plus
@@ -21,6 +23,34 @@ negative guards for failure strings that appear even when the exit code lies.
 It exists for repos with **no CI and no branch protection**, where an agent
 authors the PR and the gate is the only thing standing between generated code
 and the base branch. If you already have CI, use Mergify.
+
+## Gates are only half of it
+
+The model that wrote the PR must not be the only one saying it is fine. So a
+merge also requires a **verdict from a reviewer rloop does not control** —
+another model (Copilot, or any review bot) or a human:
+
+```yaml
+merge:
+  required_reviewers: [copilot-pull-request-reviewer]
+  reviewer_timeout_seconds: 600
+```
+
+That verdict is bound to the commit it was given on. Approve `a5aab06`, push
+again, and rloop calls it `reviewer_stale` and blocks — two reviewers agreeing
+about different versions of the code is not agreement. Silence is not approval
+either; it is `reviewer_no_verdict`, which also blocks. Enabling `merge` with an
+empty `required_reviewers` is a config error, not a shortcut: it would leave the
+authoring model as its own last check. Details in
+[The merge gate](#the-merge-gate).
+
+## Not a JavaScript tool
+
+A gate is **a shell command plus regexes over its output**, so `cargo test`,
+`pytest`, `go build`, `mvn` and `make` all work identically — see
+[`examples/`](examples/). npm is not special to rloop; it is just the ecosystem
+whose exit-code bug made the tool necessary, and the reason the design assumes
+*every* runner may be lying.
 
 ## Status
 

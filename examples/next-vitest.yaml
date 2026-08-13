@@ -1,7 +1,11 @@
 # Next.js + vitest monorepo on npm workspaces.
 # This is the shape that motivated the tool: npm 9 masks a failing child
-# script's exit code for `npm run … --workspace=<w>`, so exit status alone
-# will happily report green over a broken build.
+# script's exit code for ANY package that is a workspace member — not only
+# `--workspace=<w>`, and `cd`-ing into the package does not escape it — so exit
+# status alone will happily report green over a broken build.
+#
+# Markers here were validated against real tool output. Do the same with yours
+# (`rloop gate --only <name>` and read the log) before trusting them.
 
 version: 1
 

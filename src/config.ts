@@ -5,9 +5,11 @@ import { parse as parseYaml } from 'yaml';
  * A single verification gate.
  *
  * The core premise: an exit code is a BELT, not the proof. Some toolchains
- * mask a failing child's non-zero exit (npm 9 does this for
- * `npm run … --workspace=<w>`: it prints `npm ERR!` and returns 0), so a
- * naive `cmd && echo OK` prints OK over a broken build. The proof of green is
+ * mask a failing child's non-zero exit (npm 9 does this for any package that
+ * is a WORKSPACE MEMBER — the `--workspace` flag is not the trigger, and
+ * `cd`-ing into the package does not escape it: it prints `npm ERR!` and
+ * returns 0), so a naive `cmd && echo OK` prints OK over a broken build.
+ * See test/npm-masking.test.ts for the measured matrix. The proof of green is
  * therefore OUTPUT: positive end-of-run success markers, plus negative guards
  * for failure strings that print even when the exit code lies.
  */
