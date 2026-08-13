@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +16,18 @@ import { locateForServer, type LocatedConfig } from '../locate.js';
 import { forgeFor, mergeIfAllowed, prStatus } from '../pr.js';
 import { runPreflight } from '../preflight.js';
 import { replyAndResolve } from '../threads.js';
+
+/**
+ * The version an MCP host displays for this server, taken from package.json so
+ * it cannot drift from the published one. A hardcoded literal here already
+ * disagreed with a release once, which is worse than useless: a host reporting
+ * a stale version sends people to read the wrong changelog.
+ *
+ * Both entry points sit two directories below the package root
+ * (`src/mcp/server.ts` and `dist/mcp/server.js`), so one path serves dev and
+ * published alike. npm always ships package.json regardless of `files`.
+ */
+const PACKAGE_VERSION: string = createRequire(import.meta.url)('../../package.json').version;
 
 /**
  * MCP wrapper around the rloop core.
@@ -100,7 +114,7 @@ function fail(err: unknown) {
  * imported by anything else, including its own tests.
  */
 export function createServer(): McpServer {
-  const server = new McpServer({ name: 'rloop', version: '0.0.1' });
+  const server = new McpServer({ name: 'rloop', version: PACKAGE_VERSION });
 
   // ── read-only ────────────────────────────────────────────────────────────────
 
@@ -399,7 +413,38 @@ export function createServer(): McpServer {
   return server;
 }
 
+/**
+ * Was this file executed directly, rather than imported?
+ *
+ * The obvious implementation — `path.resolve(argv[1]) === fileURLToPath(url)`
+ * — is wrong the moment the package is installed, and wrong in the silent
+ * direction. `npm install` writes every `bin` entry as a SYMLINK:
+ *
+ *     node_modules/.bin/rloop-mcp -> ../rloop/dist/mcp/server.js
+ *
+ * `argv[1]` is then the symlink path while `import.meta.url` is the real file
+ * (Node resolves module specifiers through symlinks by default). `path.resolve`
+ * normalizes `..` and makes paths absolute; it does not touch symlinks. So the
+ * comparison fails, the transport is never connected, and the server exits 0
+ * having spoken to nobody — an MCP host reports only that the process died.
+ *
+ * Comparing real paths is what the check meant all along. Caught by installing
+ * the packed tarball and running the binary, which is the only way this
+ * surfaces: it works perfectly from a clone.
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(entry) === realpathSync(self);
+  } catch {
+    // A deleted or unreadable entry path is not a reason to start serving.
+    return path.resolve(entry) === self;
+  }
+}
+
 /** Connect over stdio only when executed directly, never on import. */
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule()) {
   await createServer().connect(new StdioServerTransport());
 }
