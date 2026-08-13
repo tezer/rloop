@@ -1,0 +1,15 @@
+> @app/server@2.134.4 test
+> vitest run --passWithNoTests
+
+ RUN  v2.1.2 /home/runner/app/server
+
+ ✓ src/__tests__/persistence-queue.test.ts (14 tests) 812ms
+   ✓ retries a task that failed transiently
+   ✓ logs "task 1 failed" and re-enqueues once
+ ✓ src/__tests__/session-store.test.ts (31 tests) 2104ms
+ ✓ src/__tests__/report-prompt.test.ts (22 tests) 1533ms
+
+ Test Files  3 passed (3)
+      Tests  67 passed (67)
+   Start at  09:14:22
+   Duration  6.41s

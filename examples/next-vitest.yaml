@@ -1,0 +1,97 @@
+# Next.js + vitest monorepo on npm workspaces.
+# This is the shape that motivated the tool: npm 9 masks a failing child
+# script's exit code for `npm run … --workspace=<w>`, so exit status alone
+# will happily report green over a broken build.
+
+version: 1
+
+forge:
+  provider: github
+  slug: your-org/your-repo
+
+committer:
+  name: your-bot-name
+  email: 12345+your-bot@users.noreply.github.com
+
+preflight:
+  - name: docker
+    run: docker info --format '{{.ServerVersion}}'
+    message: >-
+      Docker is down. Testcontainers-backed tests cannot run, so the gate
+      cannot pass. Start Docker and re-run — do not merge.
+
+gates:
+  - name: build
+    run: npm run build
+    require:
+      # "Compiled successfully" is only webpack. next then runs type-check,
+      # page-data collection and static generation, and their failures print
+      # AFTER that line. The closing route table is the real end-of-build proof.
+      - "Compiled successfully"
+      - "^Route \\("
+    forbid:
+      - "Failed to compile"
+      - "Module not found"
+      - "Error occurred prerendering"
+      - "Export encountered errors"
+      - "Build error occurred"
+      - "npm ERR!"
+    timeout_seconds: 900
+
+  - name: test
+    run: npm test
+    require:
+      # Asserts tests actually RAN. `vitest run --passWithNoTests` exits 0 on
+      # zero discovered tests, so a broken glob would otherwise green having
+      # executed nothing.
+      - "^\\s*Tests\\s+[1-9][0-9]* passed"
+    forbid:
+      # Anchored on purpose: an unanchored `failed` matches assertion text in
+      # legitimately passing error-path tests.
+      - "^\\s*FAIL "
+      - "^\\s*Tests\\s+.*[1-9][0-9]* failed"
+    timeout_seconds: 1800
+
+  # Conditional: only when the diff touches this workspace.
+  #
+  # `tsc -b` prints NOTHING on success, so there is no natural end-of-build
+  # marker to require — the gate would rest on absence-of-errors alone.
+  # Mint one instead, but mind HOW:
+  #
+  #   npm run build --workspace=w && echo MARKER     # BROKEN — prints on failure
+  #   cd w && npm run build && echo MARKER           # ALSO BROKEN, same reason
+  #   npx tsc -b && echo MARKER                      # works
+  #
+  # Measured on npm 9.2.0: the masking applies to ANY package that is a
+  # workspace member, not only to `--workspace` invocations. `cd`-ing into the
+  # workspace does not escape it. Only a standalone package propagates. So the
+  # `&&` guard is trustworthy only when npm is out of the chain — invoke the
+  # compiler directly and it propagates its own exit code.
+  #
+  # The test half needs no such trick: vitest prints its own summary line, so
+  # `Tests N passed` is already a real positive marker regardless of npm.
+  - name: authoring
+    when_paths: ["tools/authoring/**"]
+    cwd: tools/authoring
+    run: npx tsc -b && echo "RLOOP_TSC_OK" && npm run test
+    require:
+      - "^RLOOP_TSC_OK$"
+      - "^\\s*Tests\\s+[1-9][0-9]* passed"
+    forbid:
+      - "npm ERR!"
+      - "error TS[0-9]{3,}"
+      - "^\\s*FAIL "
+    timeout_seconds: 1200
+
+merge:
+  # Dry run by default. Flip this on only once you trust the gates above.
+  enabled: false
+  allowed_base_branches: [staging]   # allowlist, never a denylist
+  method: squash
+  delete_branch: true
+  require_threads_resolved: true
+  required_reviewers: [copilot-pull-request-reviewer]
+  reviewer_timeout_seconds: 600
+
+parallel_gates: false   # concurrent testcontainers runs green each other
+log_dir: .rloop/logs

@@ -1,0 +1,28 @@
+> app@2.134.4 build
+> npm run build --workspace=shared --workspace=apps/web --workspace=server
+
+> @app/shared@2.134.4 build
+> tsc -b
+
+> @app/web@2.134.4 build
+> next build
+
+   ▲ Next.js 15.0.3
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+ ✓ Linting and checking validity of types
+ ✓ Collecting page data
+ ✓ Generating static pages (34/34)
+ ✓ Collecting build traces
+ ✓ Finalizing page optimization
+
+Route (app)                                Size     First Load JS
+┌ ○ /                                      5.11 kB         102 kB
+├ ○ /admin                                 1.842 kB         89 kB
+├ ƒ /admin/scenarios/[id]                  12.4 kB         141 kB
+└ ○ /session/[token]                       18.9 kB         167 kB
++ First Load JS shared by all              87.3 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand

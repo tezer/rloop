@@ -1,0 +1,14 @@
+> @app/server@2.134.4 test
+> vitest run --passWithNoTests
+
+ RUN  v2.1.2 /home/runner/app/server
+
+ ✓ src/__tests__/persistence-queue.test.ts (14 tests) 798ms
+ FAIL  src/__tests__/session-store.test.ts > createSession > rejects mixed file visibility
+AssertionError: expected [Function] to throw an error
+ ❯ src/__tests__/session-store.test.ts:212:7
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  2 failed | 65 passed (67)
+   Start at  09:22:41
+   Duration  6.88s
