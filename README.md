@@ -1,30 +1,48 @@
 # rloop
 
-**Your build passed. It didn't run.**
+**A merge decision you can ask, instead of one you discover by being refused.**
 
 ```console
-$ npm run build && echo GREEN
-GREEN
-$ echo $?
-0
+$ rloop pr status 812
+PR #812 Add a retry budget to the job runner
+  OPEN · → staging · head 9dbe1e8
+
+  ~ copilot-pull-request-reviewer[bot] APPROVED (stale: a5aab06)
+  ✗ threads: 3/4 resolved
+
+BLOCKED — 3 condition(s) not met:
+  ✗ [gates_not_green]     Local gates are not green: test failed.
+  ✗ [reviewer_stale]      Latest review from "copilot-pull-request-reviewer" is
+                          against a5aab06, but PR head is 9dbe1e8. Stale —
+                          re-request review on the current commit.
+  ✗ [threads_unresolved]  1 unresolved review thread(s): #2109482
 ```
 
-That build failed. npm 9 masks a failing child script's exit code for **any
-package that is a workspace member** — it prints `npm ERR!` and returns `0`.
-Not just `--workspace=<w>`: a root script wrapping one masks too, and so does
-`cd packages/thing && npm run build`. You cannot `cd` your way out of it.
-Every `cmd && merge` pipeline built on that exit code is merging broken commits
-and reporting success.
+Branch protection knows all three of those things. It will tell you the same
+way every time: by refusing the merge, one round trip at a time, and only once
+you have already tried. That is fine for a human — you read the message, you go
+look. It is the wrong shape for an **agent**, which has to decide what to fix
+*before* it decides what to do next, and which cannot see a rule it never
+tripped.
 
-`rloop` is a merge gate that refuses to believe exit codes. Green is proven by
-**output**: positive end-of-run markers that only print on real success, plus
-negative guards for failure strings that appear even when the exit code lies.
+`rloop` turns the merge decision into a question you can ask. Every condition is
+evaluated on every call and **all** failures are reported at once, so three
+blockers cost one pass instead of three force-pushes.
 
-It exists for repos with **no CI and no branch protection**, where an agent
-authors the PR and the gate is the only thing standing between generated code
-and the base branch. If you already have CI, use Mergify.
+## It does not trust the thing calling it
 
-## Gates are only half of it
+`rloop pr merge` accepts no "already verified" flag. There is no way to tell it
+you checked. It re-derives the entire decision itself — re-reads the PR state,
+re-checks the reviewer verdict against the *current* head, re-lists the threads,
+re-confirms the gate run was bound to this exact commit — because the agent
+holding the tool may be acting on a verdict from three tool calls and one force
+push ago.
+
+The rule underneath every check: **a missing signal is a blocker, never a
+pass.** No review yet is not approval. Gates you skipped are not gates that
+passed. Ten minutes of silence from a reviewer is ten minutes of silence.
+
+## The reviewer is not the author
 
 The model that wrote the PR must not be the only one saying it is fine. So a
 merge also requires a **verdict from a reviewer rloop does not control** —
@@ -37,12 +55,38 @@ merge:
 ```
 
 That verdict is bound to the commit it was given on. Approve `a5aab06`, push
-again, and rloop calls it `reviewer_stale` and blocks — two reviewers agreeing
-about different versions of the code is not agreement. Silence is not approval
-either; it is `reviewer_no_verdict`, which also blocks. Enabling `merge` with an
-empty `required_reviewers` is a config error, not a shortcut: it would leave the
+again, and it is `reviewer_stale` — two reviewers agreeing about different
+versions of the code is not agreement. Enabling `merge` with an empty
+`required_reviewers` is a config error, not a shortcut: it would leave the
 authoring model as its own last check. Details in
 [The merge gate](#the-merge-gate).
+
+## And it does not believe exit codes
+
+`gates_not_green` is the condition rloop is strictest about, because the signal
+underneath it is the least trustworthy one in the stack:
+
+```console
+$ npm run build && echo GREEN
+GREEN
+$ echo $?
+0
+```
+
+That build failed. npm 9 masks a failing child script's exit code for **any
+package that is a workspace member** — it prints `npm ERR!` and returns `0`.
+Not just `--workspace=<w>`: a root script wrapping one masks too, and so does
+`cd packages/thing && npm run build`. You cannot `cd` your way out of it.
+
+So green is proven by **output**: positive end-of-run markers that only print on
+real success, plus negative guards for failure strings that appear even when the
+exit code lies.
+
+> **If your test runner emits JUnit XML, TAP or SARIF, prefer that** — a
+> structured result file beats a regex over a log, and you should reach for it
+> first. rloop exists for the rest: builds, type-checks, container preflights,
+> lint passes and custom scripts, which mostly emit prose and an exit code you
+> have just seen lie.
 
 ## Not a JavaScript tool
 
@@ -51,6 +95,37 @@ A gate is **a shell command plus regexes over its output**, so `cargo test`,
 [`examples/`](examples/). npm is not special to rloop; it is just the ecosystem
 whose exit-code bug made the tool necessary, and the reason the design assumes
 *every* runner may be lying.
+
+## If you already have CI and a merge queue
+
+Then most of the *policy* is solved for you, and you should not replace it.
+Required status checks, "dismiss stale approvals on push" and "require
+conversation resolution" cover the merge conditions natively; Mergify, Aviator,
+Trunk or GitHub's own merge queue cover the automation. rloop is not competing
+with those and is not a policy engine for your org.
+
+Two things it still does that they do not:
+
+**Your CI inherits the false green.** A workflow step that runs
+`npm run build --workspace=web` gets the same masked `0` your terminal does, and
+GitHub renders it as a green check. CI moved *where* the command runs; it did
+not make the exit code honest. `rloop gate` is useful as the step your workflow
+actually runs:
+
+```yaml
+- run: npx rloop gate --json    # exit 1 = broken, exit 2 = no verdict
+```
+
+**Merge queues answer by refusing.** The loop is: push, wait for CI, read the
+rejection, fix, push again. That is a reasonable cost per human iteration and a
+bad one per *agent* iteration. The same `rloop gate` config runs locally before
+the push and answers in seconds, so a failing type-check costs one command
+instead of one round trip through a runner and a reviewer.
+
+The case rloop was actually built for is narrower than either: **no CI, no
+branch protection, and an agent authoring the PR**, where the gate runs on the
+same machine as the work and is the only thing between generated code and the
+base branch.
 
 ## Status
 
