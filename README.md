@@ -167,6 +167,75 @@ npm install && npm run build
 node dist/cli.js check
 ```
 
+## Writing your config
+
+Put `rloop.yaml` in your repo root. rloop searches upward for `rloop.yaml`,
+`rloop.yml`, `.rloop.yaml` or `.rloop.yml`, so a subdirectory works too. Start
+by copying the nearest file from [`examples/`](examples/).
+
+Only two blocks need information you have to go and look up. Both are one
+command.
+
+**`forge.slug`** — your repo as `owner/name`:
+
+```bash
+gh repo view --json nameWithOwner -q .nameWithOwner
+```
+
+**`committer`** — your git identity, which rloop compares against the live
+`git config` before every run and refuses to proceed if they differ (an
+unattended loop must not author under someone else's name):
+
+```bash
+git config user.name && git config user.email
+```
+
+If `user.email` is unset, or you want GitHub's privacy address rather than your
+real one, build it from your account — the shape is always
+`<id>+<login>@users.noreply.github.com`:
+
+```bash
+gh api user -q '"\(.id)+\(.login)@users.noreply.github.com"'
+```
+
+Then set it: `git config user.email "<that address>"`. The whole `committer`
+block is optional — delete it and the check is skipped.
+
+**`merge.required_reviewers`** is a login, not a display name, and bots are
+where this bites. GitHub Copilot answers to three different spellings across
+three API surfaces; use `copilot-pull-request-reviewer` and let rloop normalize
+(see [Reviewer logins are not one string](#reviewer-logins-are-not-one-string)).
+For a human, `gh api users/<login> -q .login` confirms the exact casing.
+
+**`merge.allowed_base_branches`** is an allowlist. List only the branches an
+agent may merge into, and leave your release branch out — a branch you never
+thought about stays protected by default rather than by memory.
+
+### The gates are the part that takes real work
+
+Everything above is bookkeeping. A gate needs a `run` command and markers that
+prove it worked, and **you cannot write those from documentation** — tool output
+changes between versions. Get them from your own logs:
+
+```bash
+# 1. Write the gate with only the `run:` line and a placeholder marker.
+# 2. Run just that gate. It will fail; that is fine, you want its log.
+rloop gate --only build
+
+# 3. Read what the command ACTUALLY printed.
+less .rloop/logs/build.log
+```
+
+Now pick markers out of that file, using the three rules in
+[Picking markers that actually hold](#picking-markers-that-actually-hold):
+take `require` from the **end** of a successful run, make it prove work happened
+(a non-zero count, not merely the absence of complaints), and anchor `forbid` so
+it cannot match ordinary text inside passing output.
+
+Re-run `rloop gate --only <name>` until it passes on a good commit. Then break
+something on purpose — comment out a line, fail an assertion — and confirm it
+goes red. A marker you have only ever seen pass is a marker you have not tested.
+
 ## Use
 
 ```bash
@@ -525,6 +594,125 @@ future npm fixes this, you will find out here rather than from folklore.
 npm echoes the script body before running it, so a script whose *text* contains
 a forbidden string trips its own guard. Put the failure strings in your config,
 not in your script names.
+
+## Troubleshooting
+
+Most of these are rloop refusing to guess. The message names the cause; this is
+what to do about it.
+
+### `worktree is dirty. A gate run against uncommitted changes proves nothing`
+
+You have uncommitted changes to **tracked** files. The gates would test your
+working copy while the verdict claims to be about a commit, so rloop declines to
+render one. Untracked files are ignored — only modifications count.
+
+```bash
+git status --porcelain --untracked-files=no   # exactly what rloop looks at
+```
+
+Commit or stash them. `--only` does **not** get you past this — it selects which
+gates run, not whether the verdict is trustworthy.
+
+If you just want to know whether the code works right now, say so explicitly:
+
+```bash
+rloop gate --allow-dirty
+```
+
+The gates run, and the result is still marked `VOID — worktree was dirty. These
+gates did not verify <sha>.` with exit code 2. The flag moves where the run
+stops; it cannot turn an unverifiable run into a verdict.
+
+### `no config found. Looked for rloop.yaml … from <dir> upward`
+
+You are outside the repo, or the file is not where you think. Point at it:
+
+```bash
+rloop gate -c /path/to/rloop.yaml -C /path/to/repo
+```
+
+`-c` is the config, `-C` the repo root. The MCP server needs both explicitly —
+it deliberately has no upward search, because a host can launch it with any
+working directory and the search could silently resolve to a different repo.
+
+### `committer identity is "X", config requires "Y"`
+
+Your `git config user.name`/`user.email` do not match the `committer` block. Fix
+whichever is wrong — usually you switched identity for another project and did
+not switch back. See [Writing your config](#writing-your-config), or delete the
+`committer` block to skip the check.
+
+### The command works by hand, but the gate says `required pattern(s) never appeared`
+
+Your marker does not match the real output. Read what actually printed:
+
+```bash
+rloop gate --only <name>
+less .rloop/logs/<name>.log
+```
+
+Three usual causes: the pattern is anchored with `^` but the line is indented
+(use `^\s*`); the tool changed its wording in a version bump; or the marker
+prints to stderr in a form you did not expect. rloop matches **per line**, so
+`^` and `$` mean what they do in `grep -E`.
+
+### The gate goes red on a run that is genuinely fine
+
+A `forbid` pattern is matching ordinary text. The classic is a bare `failed`,
+which appears inside legitimately passing error-path tests ("task 1 failed").
+The log names the offender:
+
+```
+forbidden pattern "failed" matched at line 412
+   412 │   ✓ retries when the first attempt failed
+```
+
+Anchor it (`^\s*FAIL `), or exclude the known-noise shape with a negative
+lookahead. Do not delete the guard.
+
+### `PARTIAL — 1 selected gate(s) passed, but not every gate ran`
+
+You used `--only`. That is not a merge verdict and never will be, by design.
+Run `rloop gate` with no filter for one.
+
+### Exit code 2 instead of 0 or 1
+
+`1` means a gate failed — the code is broken. `2` means **no verdict**: bad
+config, a preflight blocker, a timeout, or a run voided by a dirty tree or
+HEAD moving mid-run. Both block a merge, but only `1` is about your code.
+
+### `pr merge` refuses with `base_not_allowed`
+
+The PR targets a branch not in `merge.allowed_base_branches`. If that is
+deliberate — a release branch an agent must never merge into — this is working.
+If not, add the branch.
+
+### `pr merge` refuses with `reviewer_stale`
+
+Your reviewer approved an earlier commit and you have pushed since. Re-request
+the review on the current head. Two reviewers agreeing about different versions
+of the code is not agreement.
+
+### `gh: command not found`, or every `pr` command fails
+
+rloop shells out to the GitHub CLI and never handles a token itself. Install
+`gh` and authenticate:
+
+```bash
+gh auth status   # must show a logged-in account
+```
+
+### A gate is rejected at `rloop check`
+
+Two rules a config cannot break. **A gate with no `require` and no `forbid`** is
+refused, because it would pass on exit code alone, which is the thing this tool
+exists not to trust. **`merge.enabled: true` with an empty
+`allowed_base_branches`** is refused for the same class of reason: enabling
+merges without saying where is not a configuration, it is an oversight.
+
+A gate with only `forbid` patterns is allowed — `tsc -b` prints nothing on
+success — but warns, because it can only catch failure modes you already thought
+of.
 
 ## Layout
 
