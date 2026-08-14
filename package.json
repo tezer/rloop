@@ -1,6 +1,6 @@
 {
   "name": "@tezer/rloop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Evidence-based merge gate for AI-authored PRs. Exit codes lie; prove green with output.",
   "keywords": [
     "merge-gate",
