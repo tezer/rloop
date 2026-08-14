@@ -1,14 +1,16 @@
-# Polyglot repo — Rust + Python. No npm anywhere.
+# Rust workspace, cargo build + cargo test.
 #
 # Nothing in rloop is JavaScript-specific: a gate is a shell command plus
 # regexes over its output. The npm exit-code bug is what made the tool
-# necessary, not what the tool is limited to.
+# necessary, not what the tool is limited to. A single config can mix
+# toolchains freely — add a `pytest` or `go test` gate to this file and it runs
+# beside the cargo ones.
 #
 # ⚠️ Unlike examples/next-vitest.yaml, the markers below have NOT been
-# validated against a live run of this stack. They match the documented output
-# formats of cargo and pytest, which is a starting point, not proof. Run
-# `rloop gate --only <name>`, read the log it writes, and confirm every
-# `require` pattern actually appears before you let this gate merge anything.
+# validated against a live run. They match the documented output of cargo,
+# which is a starting point, not proof. Run `rloop gate --only <name>`, read
+# the log it writes, and confirm every `require` pattern actually appears
+# before you let this gate merge anything.
 
 version: 1
 
@@ -21,7 +23,7 @@ committer:
   email: 12345+your-bot@users.noreply.github.com
 
 gates:
-  - name: rust-build
+  - name: build
     # cargo is honest about exit codes — unlike npm in a workspace — but the
     # belt-and-braces rule still holds: prove it by output, not by status.
     run: cargo build --workspace --all-targets
@@ -33,16 +35,19 @@ gates:
       # manifest failures that carry no code.
       - "^error\\[E[0-9]+\\]"
       - "^error: "
-      - "^\\s*Compiling .* failed"
     timeout_seconds: 1800
 
-  - name: rust-test
+  - name: test
     run: cargo test --workspace
     require:
       # Requires a NON-ZERO passed count. `cargo test` prints
       # "test result: ok. 0 passed" for a crate with no tests at all and exits
       # 0, so a broken test-discovery setup would otherwise green having run
-      # nothing. This is the same trap as vitest's --passWithNoTests.
+      # nothing. Same trap as vitest's --passWithNoTests.
+      #
+      # Note this only catches discovery that broke COMPLETELY. A workspace
+      # whose test target quietly stopped compiling one crate still prints a
+      # passing result for the others.
       - "^test result: ok\\. [1-9][0-9]* passed"
     forbid:
       - "^test result: FAILED"
@@ -50,24 +55,9 @@ gates:
       - "^error\\[E[0-9]+\\]"
     timeout_seconds: 2400
 
-  - name: python-test
-    # Only runs when Python actually changed. Drop `when_paths` if you would
-    # rather always run it — conditional gates are a real footgun when the
-    # dependency graph is wider than the directory layout suggests.
-    when_paths: ["api/**", "pyproject.toml"]
-    cwd: api
-    run: pytest -q
-    require:
-      # pytest's summary line: "===== 42 passed in 3.14s ====="
-      - "^=+ .*[1-9][0-9]* passed"
-    forbid:
-      - "^=+ .*[1-9][0-9]* failed"
-      - "^=+ .*[1-9][0-9]* error"
-      # pytest crashed inside itself; the summary line may be absent entirely.
-      - "^INTERNALERROR"
-      # Collection failed: tests that never ran cannot have passed.
-      - "^ERROR .*::"
-    timeout_seconds: 1200
+  # `cargo clippy -- -D warnings` and `cargo fmt --check` fit here too. Both
+  # are silent on success, so they need a minted marker rather than a natural
+  # one — see "Picking markers that actually hold" in the README.
 
 merge:
   enabled: true

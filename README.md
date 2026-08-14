@@ -92,9 +92,13 @@ exit code lies.
 
 A gate is **a shell command plus regexes over its output**, so `cargo test`,
 `pytest`, `go build`, `mvn` and `make` all work identically — see
-[`examples/`](examples/). npm is not special to rloop; it is just the ecosystem
-whose exit-code bug made the tool necessary, and the reason the design assumes
-*every* runner may be lying.
+[`examples/`](examples/) for copyable starting points. npm is not special to
+rloop; it is just the ecosystem whose exit-code bug made the tool necessary,
+and the reason the design assumes *every* runner may be lying.
+
+One config can mix them. Nothing groups gates by language, so a repo with a
+Rust service and a Python worker lists both in the same `gates:` block and gets
+one verdict over the lot.
 
 ## If you already have CI and a merge queue
 

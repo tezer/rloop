@@ -1,0 +1,69 @@
+# Python project, pytest.
+#
+# Nothing in rloop is JavaScript-specific: a gate is a shell command plus
+# regexes over its output. The npm exit-code bug is what made the tool
+# necessary, not what the tool is limited to. A single config can mix
+# toolchains freely — add a `cargo test` or `go build` gate to this file and it
+# runs beside the pytest one.
+#
+# ⚠️ Unlike examples/next-vitest.yaml, the markers below have NOT been
+# validated against a live run. They match the documented output of pytest,
+# which is a starting point, not proof. Run `rloop gate --only <name>`, read
+# the log it writes, and confirm every `require` pattern actually appears
+# before you let this gate merge anything.
+
+version: 1
+
+forge:
+  provider: github
+  slug: your-org/your-repo
+
+committer:
+  name: your-bot-name
+  email: 12345+your-bot@users.noreply.github.com
+
+gates:
+  - name: test
+    run: pytest -q
+    require:
+      # pytest's summary line: "===== 42 passed in 3.14s =====".
+      #
+      # The non-zero count matters. `pytest` on a directory it cannot collect
+      # anything from exits 5, but a `--exitfirst`/`-p no:cacheprovider` setup
+      # or a conftest that silently deselects everything can still land you at
+      # "no tests ran" with a zero status depending on configuration. Requiring
+      # a real number means an empty run cannot green.
+      - "^=+ .*[1-9][0-9]* passed"
+    forbid:
+      - "^=+ .*[1-9][0-9]* failed"
+      - "^=+ .*[1-9][0-9]* error"
+      # pytest crashed inside itself; the summary line may be absent entirely.
+      - "^INTERNALERROR"
+      # Collection failed: tests that never ran cannot have passed.
+      - "^ERROR .*::"
+    timeout_seconds: 1200
+
+  # A type-check gate belongs here too. `mypy` prints
+  # "Success: no issues found in N source files" on success, which is a real
+  # end-of-run marker — better than minting one, and it carries the file count:
+  #
+  #   - name: typecheck
+  #     run: mypy src
+  #     require: ["^Success: no issues found in [1-9][0-9]* source files?$"]
+  #     forbid: ["^src/.*: error:"]
+
+merge:
+  enabled: true
+  # Allowlist, never a denylist. A branch you forgot to think about must not
+  # inherit permission to be merged into.
+  allowed_base_branches: [develop]
+  method: squash
+  delete_branch: true
+  require_threads_resolved: true
+  # The model that wrote the PR is not allowed to be its own last check.
+  required_reviewers: [copilot-pull-request-reviewer]
+  reviewer_timeout_seconds: 600
+
+parallel_gates: false
+
+log_dir: .rloop/logs
