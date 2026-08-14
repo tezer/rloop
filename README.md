@@ -61,6 +61,49 @@ versions of the code is not agreement. Enabling `merge` with an empty
 authoring model as its own last check. Details in
 [The merge gate](#the-merge-gate).
 
+## Where the models are configured: not here
+
+rloop never calls an LLM. There is no model setting, no API key, and no
+provider — the entire config is `version`, `forge`, `committer`, `preflight`,
+`gates`, `merge`, `parallel_gates`, `log_dir`. It holds no credentials of any
+kind, GitHub included: every forge call shells out to `gh`.
+
+Two models are usually involved. Neither is chosen here.
+
+**The one driving the loop** is your MCP host — Claude Code, Cursor, whatever
+you launched the server from. Its config names the *server*:
+
+```json
+{ "mcpServers": { "rloop": {
+  "command": "npx", "args": ["-y", "--package=@tezer/rloop", "rloop-mcp"]
+} } }
+```
+
+Which model sits behind that host is the host's own setting. rloop is a tool it
+calls and cannot see what is calling it.
+
+**The one reviewing** is a `required_reviewers` entry, and that is a **forge
+login, not a model**:
+
+```yaml
+merge:
+  required_reviewers: [copilot-pull-request-reviewer]
+```
+
+You enable that reviewer on GitHub; rloop only checks whether the login left a
+verdict on the current head. Put a human's username there and the same rules
+apply — stale verdicts still block, silence still blocks. rloop has no opinion
+about what kind of thing reviews the code, only that it is not the thing that
+wrote it.
+
+**What the driving agent should do** is the `loop` prompt, served over MCP from
+[`prompts/loop.md`](prompts/loop.md) — the review streams, the fix loop, the
+thread discipline. It names no model either, which is what makes it portable
+across hosts. The [Claude Code skill](skills/r-loop/SKILL.md) is a thin wrapper
+over it.
+
+rloop is the referee. You bring the players.
+
 ## And it does not believe exit codes
 
 `gates_not_green` is the condition rloop is strictest about, because the signal
@@ -201,8 +244,9 @@ gh api user -q '"\(.id)+\(.login)@users.noreply.github.com"'
 Then set it: `git config user.email "<that address>"`. The whole `committer`
 block is optional — delete it and the check is skipped.
 
-**`merge.required_reviewers`** is a login, not a display name, and bots are
-where this bites. GitHub Copilot answers to three different spellings across
+**`merge.required_reviewers`** is a login, not a display name — and not a model
+either, see [Where the models are configured](#where-the-models-are-configured-not-here).
+Bots are where this bites. GitHub Copilot answers to three different spellings across
 three API surfaces; use `copilot-pull-request-reviewer` and let rloop normalize
 (see [Reviewer logins are not one string](#reviewer-logins-are-not-one-string)).
 For a human, `gh api users/<login> -q .login` confirms the exact casing.
