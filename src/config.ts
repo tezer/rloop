@@ -103,6 +103,33 @@ const mergeSchema = z
      */
     required_reviewers: z.array(z.string().min(1)).default([]),
 
+    /**
+     * What a required reviewer must actually have SAID.
+     *
+     * This exists because "a review exists" and "the reviewer approved" are
+     * different facts, and conflating them was a real hole. GitHub review
+     * states are APPROVED, CHANGES_REQUESTED and COMMENTED — and a bot that
+     * files findings as inline comments submits COMMENTED whether it found
+     * nothing or found ten things. GitHub Copilot never submits APPROVED at
+     * all. So a gate that blocks only on CHANGES_REQUESTED is really checking
+     * "did the reviewer turn up", which is a weaker claim than it reads as.
+     *
+     * - `approved` — only APPROVED clears the gate. Correct for humans and any
+     *   reviewer that actually approves. Makes a comment-only bot permanently
+     *   blocking, which is why it cannot be the universal default.
+     * - `any_verdict` — APPROVED or COMMENTED clears it; CHANGES_REQUESTED
+     *   still blocks. Correct ONLY when the reviewer's findings arrive as
+     *   review threads and `require_threads_resolved` is what actually gates
+     *   them. Understand what that leans on: thread resolution is usually
+     *   performed by the same agent being gated, so this setting delegates the
+     *   real check to a party with an interest in the answer.
+     *
+     * No default, deliberately. With `merge.enabled` the choice decides what
+     * "the reviewer was happy" means, and inheriting that silently is the
+     * mistake this field was added to prevent.
+     */
+    required_reviewer_state: z.enum(['approved', 'any_verdict']).optional(),
+
     /** Bound on polling for those verdicts before giving up and surfacing. */
     reviewer_timeout_seconds: z.number().int().positive().default(600),
   })
@@ -114,6 +141,24 @@ const mergeSchema = z
         message:
           'merge.enabled is true but merge.allowed_base_branches is empty. ' +
           'List every branch that may be merged into, explicitly.',
+      });
+    }
+    if (
+      merge.enabled &&
+      merge.required_reviewers.length > 0 &&
+      merge.required_reviewer_state === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'merge.enabled is true with required_reviewers but no ' +
+          'merge.required_reviewer_state. Say which verdicts count: "approved" ' +
+          '(only an APPROVED review clears the gate) or "any_verdict" (APPROVED ' +
+          'or COMMENTED clears it, CHANGES_REQUESTED still blocks — for bots ' +
+          'like Copilot that never approve and file findings as threads, where ' +
+          'require_threads_resolved is the real gate). There is no safe default: ' +
+          'one of them blocks a comment-only bot forever, the other accepts a ' +
+          'review that raised findings.',
       });
     }
   });

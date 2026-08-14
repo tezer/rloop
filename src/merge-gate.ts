@@ -12,6 +12,7 @@ export type BlockerCode =
   | 'reviewer_no_verdict'
   | 'reviewer_stale'
   | 'reviewer_changes_requested'
+  | 'reviewer_not_approved'
   | 'threads_unresolved';
 
 export interface Blocker {
@@ -127,6 +128,22 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
       blockers.push({
         code: 'reviewer_changes_requested',
         message: `"${required}" requested changes on ${short(latest.sha)}.`,
+      });
+      continue;
+    }
+
+    // Under `approved`, a COMMENTED review is not an approval — it is a
+    // reviewer who looked and declined to say yes. Treating those as
+    // interchangeable is what made "the reviewer was happy" mean "the reviewer
+    // turned up".
+    if (cfg.merge.required_reviewer_state === 'approved' && latest.state !== 'APPROVED') {
+      blockers.push({
+        code: 'reviewer_not_approved',
+        message:
+          `"${required}" left a ${latest.state} review on ${short(latest.sha)}, not an ` +
+          `APPROVED one. Config requires required_reviewer_state: approved. ` +
+          `(A reviewer that never approves — Copilot files findings as COMMENTED — ` +
+          `needs "any_verdict" plus require_threads_resolved.)`,
       });
     }
   }

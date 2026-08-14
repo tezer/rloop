@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 
+import { GIT_ENV_OVERRIDES } from './git.js';
+
 export interface CommandOutcome {
   /** stdout and stderr, interleaved in arrival order. */
   output: string;
@@ -29,7 +31,13 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
 
     const child = spawn('bash', ['-c', command], {
       cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
+      // Gate commands get the SCRUBBED git environment, not the raw one.
+      // Scrubbing rloop's own git calls is not enough: gates run scripts that
+      // read git themselves, and a leaked GIT_DIR would send those to another
+      // repository while rloop reported honestly about this one. A gate that
+      // genuinely needs an override can still set it explicitly via `env:`,
+      // which is applied last and deliberately wins.
+      env: { ...process.env, ...GIT_ENV_OVERRIDES, ...(opts.env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Own process group, so a timeout kills the whole tree rather than
       // orphaning children (a hung container pull outlives its npm parent).

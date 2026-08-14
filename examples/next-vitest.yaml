@@ -95,6 +95,10 @@ merge:
   delete_branch: true
   require_threads_resolved: true
   required_reviewers: [copilot-pull-request-reviewer]
+  # Copilot never submits APPROVED — it files findings as COMMENTED threads,
+  # so require_threads_resolved above is what actually gates them. Use
+  # `approved` for a human reviewer. There is no default: see the README.
+  required_reviewer_state: any_verdict
   reviewer_timeout_seconds: 600
 
 parallel_gates: false   # concurrent testcontainers runs green each other

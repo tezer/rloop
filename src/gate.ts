@@ -5,7 +5,7 @@ import picomatch from 'picomatch';
 import type { GateConfig, RloopConfig } from './config.js';
 import { describeEvidence, evaluateEvidence } from './evidence.js';
 import { runCommand } from './exec.js';
-import { headSha, isDirty } from './git.js';
+import { assertRepoRoot, headSha, isDirty } from './git.js';
 import type { GateResult, GateRunResult } from './types.js';
 
 export interface RunOptions {
@@ -130,6 +130,14 @@ export async function runGates(cfg: RloopConfig, opts: RunOptions): Promise<Gate
   const startedAt = Date.now();
   const logDir = path.resolve(opts.repoRoot, cfg.log_dir);
   await mkdir(logDir, { recursive: true });
+
+  // Before any git answer is trusted, confirm they will be about this tree.
+  // Scrubbing the environment stops git being redirected elsewhere; it cannot
+  // tell you `repoRoot` is the root rather than a subdirectory of some larger
+  // repository, where HEAD and `status` would describe an ancestor and the
+  // verdict would name a commit nobody is merging. Throws — this is a
+  // configuration error, not a gate result.
+  await assertRepoRoot(opts.repoRoot);
 
   const shaBefore = await headSha(opts.repoRoot);
   const dirty = await isDirty(opts.repoRoot);

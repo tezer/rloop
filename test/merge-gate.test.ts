@@ -19,6 +19,7 @@ merge:
   enabled: true
   allowed_base_branches: [staging]
   required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
 ${extra}
 `);
 
@@ -245,5 +246,103 @@ describe('matchesReviewer', () => {
 
   it('does not match unrelated reviewers', () => {
     expect(matchesReviewer('copilot', 'tezer')).toBe(false);
+  });
+});
+
+describe('required_reviewer_state', () => {
+  /**
+   * The hole this closes: GitHub review states are APPROVED,
+   * CHANGES_REQUESTED and COMMENTED, and blocking only on CHANGES_REQUESTED
+   * means a COMMENTED review clears the gate — whether the reviewer found
+   * nothing or found ten things. Copilot files findings as COMMENTED and never
+   * submits APPROVED, so "the reviewer was happy" silently meant "the reviewer
+   * turned up". Caught on rloop's own PR, by a review that was itself
+   * COMMENTED-with-a-real-finding.
+   */
+  const commented: ReviewVerdict = {
+    author: 'copilot-pull-request-reviewer',
+    state: 'COMMENTED',
+    sha: HEAD,
+    submittedAt: '2026-08-14T10:00:00Z',
+  };
+  const approved: ReviewVerdict = { ...commented, state: 'APPROVED' };
+
+  /** Same shape as `cfg()`, but demanding a real APPROVED verdict. */
+  const strictCfg = (): RloopConfig =>
+    loadConfig(`
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^Route \\\\("]
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: approved
+`);
+
+  it('under `approved`, a COMMENTED review blocks', () => {
+    const d = evaluateMergeGate({
+      cfg: strictCfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviews: [commented],
+      threads: [],
+    });
+    expect(d.allowed).toBe(false);
+    expect(codes(d)).toContain('reviewer_not_approved');
+  });
+
+  it('under `approved`, an APPROVED review clears it', () => {
+    const d = evaluateMergeGate({
+      cfg: strictCfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviews: [approved],
+      threads: [],
+    });
+    expect(d.allowed).toBe(true);
+  });
+
+  it('under `any_verdict`, a COMMENTED review clears it — the documented trade', () => {
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviews: [commented],
+      threads: [],
+    });
+    expect(d.allowed).toBe(true);
+  });
+
+  it('CHANGES_REQUESTED still blocks under `any_verdict`, and reports that reason', () => {
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviews: [{ ...commented, state: 'CHANGES_REQUESTED' }],
+      threads: [],
+    });
+    const codes = d.blockers.map((b) => b.code);
+    expect(codes).toContain('reviewer_changes_requested');
+    // Not double-reported as "not approved" — one cause, one blocker.
+    expect(codes).not.toContain('reviewer_not_approved');
+  });
+
+  it('is REQUIRED when merge is enabled with reviewers — no silent default', () => {
+    expect(() =>
+      loadConfig(`
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^Route \\\\("]
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer]
+`),
+    ).toThrow(/required_reviewer_state/);
   });
 });

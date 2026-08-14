@@ -382,6 +382,40 @@ tool's own failure detection should be tested.
 - **A gate with no patterns is rejected**, because it would pass on exit code
   alone. A gate with only `forbid` patterns is allowed (`tsc -b` prints nothing
   on success) but warns — it can only catch failure modes you already know.
+- **`GIT_DIR` and friends are stripped** from rloop's own git calls *and* from
+  every gate subprocess. `GIT_DIR` outranks `cwd`, so without this a leaked
+  value redirects HEAD, `status` and any git the gates themselves run — all to
+  the same wrong repository, all agreeing. See
+  [what it cannot do](#what-it-cannot-do) for the part scrubbing does not fix.
+- **`required_reviewer_state` has no default.** "A review exists" and "the
+  reviewer approved" are different facts; see below.
+
+### A review is not an approval
+
+GitHub review states are `APPROVED`, `CHANGES_REQUESTED` and `COMMENTED`. A bot
+that files findings as inline comments submits `COMMENTED` whether it found
+nothing or found ten things — and **Copilot never submits `APPROVED` at all**.
+So a gate blocking only on `CHANGES_REQUESTED` is checking "did the reviewer
+turn up", which reads like a stronger claim than it is.
+
+```yaml
+merge:
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict   # or: approved
+```
+
+- `approved` — only `APPROVED` clears the gate. Right for humans. Makes a
+  comment-only bot block forever, which is why it cannot be the default.
+- `any_verdict` — `APPROVED` or `COMMENTED` clears it; `CHANGES_REQUESTED`
+  still blocks. Right when the reviewer's findings arrive as review threads and
+  `require_threads_resolved` is the real gate. **Know what that leans on:**
+  threads are usually resolved by the same agent being gated, so this delegates
+  the check to a party with an interest in the answer.
+
+There is deliberately no default — with `merge.enabled`, this decides what "the
+reviewer was happy" means, and inheriting that silently is the mistake the
+field exists to prevent. rloop found this in its own gate: a `COMMENTED` review
+carrying a real finding satisfied the reviewer condition.
 
 ## What it cannot do
 
