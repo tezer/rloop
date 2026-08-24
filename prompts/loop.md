@@ -34,6 +34,13 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
 
 4. **On any critical or important finding:**
    - Fix the root cause, not the symptom.
+   - If the finding is in a **comment**, prefer deleting the claim to rewording
+     it. A deletion cannot be wrong. A rewrite is a fresh unverified claim, and
+     it is the single most reliable source of the next round's findings.
+   - After a fix kills a mutant, **run the opposite mutation.** A reviewer
+     reports the instance they found; the property is usually two-sided
+     (added/removed, padded/unpadded, prepended/appended). Patching the
+     reported half and shipping is how one defect survives four rounds.
    - If the finding is factually wrong, rebut it in the thread **with
      evidence** — command output, a file citation. A rebuttal has to survive
      someone re-reading it later. "This is intentional" is not evidence.
@@ -65,9 +72,36 @@ reviewer is not approval. It is ten minutes of silence.
 **Green gates on a dirty worktree prove nothing.** The tool marks that run void.
 It is right to. Commit or stash, then re-run.
 
+**Your own fixes are the next round's findings.** Once the code settles, most
+findings are prose you wrote the round before. That is not carelessness: code
+has a falsification loop that runs in seconds — compiler, tests, mutation — and
+prose has none, so a wrong sentence can only be caught in review, one round
+later, and your fix for it is another unverified sentence. Check a comment that
+reaches outside its file with the tool that decides — run the parser, run the
+regex, run the mutation — or delete the claim.
+
 **"I already checked."** You may be holding a verdict from several tool calls
 ago, with pushes in between. The merge tool re-derives everything for this
 reason. Do not look for a way to skip it.
+
+## When the loop stops converging
+
+Track whether each round changed **behaviour** — a non-comment line in shipped
+source. Two consecutive rounds that change none means the artifact is done and
+the loop is now grading your prose against itself.
+
+That is not a licence to merge with known-wrong comments. Sort the remaining
+findings by one question: **believing this, does someone make a wrong change?**
+
+- *Yes* — "this case is covered by a test", "the compiler enforces this", "that
+  block type is unaffected". Those are correctness defects that happen to live
+  in a comment. A maintainer trusts them, makes the change, sees green, ships
+  the bug back. Fix them.
+- *No* — imprecise wording, a stale cross-reference, a claim nobody acts on.
+  Delete or leave. It does not earn a round.
+
+Do both in the same commit as the last code fix, then merge. Stop running
+rounds; do not stop fixing.
 
 ## When to stop and ask
 
