@@ -114,6 +114,113 @@ describe('git calls under a leaked GIT_DIR', () => {
   });
 });
 
+/**
+ * The `GIT_CONFIG_*` family — the same hazard one variable over.
+ *
+ * Ported from WorkProbe's check-version-bump tests, where mutation testing
+ * found this entire branch of the scrub INERT: deleting every `GIT_CONFIG_*`
+ * entry left that suite green while a `url.<mirror>.insteadOf` payload forged a
+ * clean verdict against a stale remote. A later round found the same of
+ * `GIT_CONFIG_SYSTEM` alone. Both entries were in the scrub; nothing held them
+ * there. Here they were not even in the scrub — the fix shipped to npm without
+ * them, and without a test to notice.
+ *
+ * The subject is the GATE SUBPROCESS, not rloop's own reads. rloop never
+ * contacts a remote; its gates do, and a redirect sends fetch and ls-remote to
+ * the same wrong place TOGETHER — so a gate that cross-checks one against the
+ * other agrees with itself, about a repository nobody is merging.
+ *
+ * A stale MIRROR, not an unrelated repo: the redirect must land on something
+ * sharing history, or the command fails for the wrong reason and the test
+ * passes without exercising the scrub at all.
+ */
+describe('gate subprocesses under a leaked GIT_CONFIG_*', () => {
+  let origin: string;
+  let mirror: string;
+  let clone: string;
+  let originSha: string;
+  let mirrorSha: string;
+  let cfgFile: string;
+
+  beforeAll(() => {
+    origin = mkdtempSync(path.join(tmpdir(), 'rloop-origin-'));
+    git(['init', '--bare', '-q', '-b', 'main', '.'], origin);
+
+    const seed = mkdtempSync(path.join(tmpdir(), 'rloop-seed-'));
+    git(['init', '-q', '-b', 'main', '.'], seed);
+    git(['config', 'user.email', 't@e.st'], seed);
+    git(['config', 'user.name', 'tester'], seed);
+    writeFileSync(path.join(seed, 'f.txt'), 'one');
+    git(['add', '-A'], seed);
+    git(['commit', '-qm', 'one'], seed);
+    git(['remote', 'add', 'origin', origin], seed);
+    git(['push', '-q', 'origin', 'main'], seed);
+
+    // Clone the mirror BEFORE origin moves on, so it holds real but outdated
+    // history — exactly what a redirected read would report as current.
+    mirror = mkdtempSync(path.join(tmpdir(), 'rloop-mirror-'));
+    git(['clone', '--bare', '-q', origin, mirror], tmpdir());
+
+    writeFileSync(path.join(seed, 'f.txt'), 'two');
+    git(['commit', '-aqm', 'two'], seed);
+    git(['push', '-q', 'origin', 'main'], seed);
+    rmSync(seed, { recursive: true, force: true });
+
+    clone = mkdtempSync(path.join(tmpdir(), 'rloop-clone-'));
+    git(['clone', '-q', origin, clone], tmpdir());
+
+    originSha = git(['rev-parse', 'refs/heads/main'], origin);
+    mirrorSha = git(['rev-parse', 'refs/heads/main'], mirror);
+
+    cfgFile = path.join(tmpdir(), `rloop-gitconfig-${process.pid}`);
+    writeFileSync(cfgFile, `[url "${mirror}"]\n\tinsteadOf = ${origin}\n`);
+  });
+
+  afterAll(() => {
+    for (const d of [origin, mirror, clone]) if (d) rmSync(d, { recursive: true, force: true });
+    if (cfgFile) rmSync(cfgFile, { force: true });
+  });
+
+  it.each([
+    ['GIT_CONFIG_GLOBAL', () => ({ GIT_CONFIG_GLOBAL: cfgFile })],
+    ['GIT_CONFIG_SYSTEM', () => ({ GIT_CONFIG_SYSTEM: cfgFile })],
+    // The channel a first GIT_CONFIG_* pass misses: what `git -c k=v`
+    // propagates to subprocesses, independent of GIT_CONFIG_COUNT.
+    [
+      'GIT_CONFIG_PARAMETERS',
+      () => ({ GIT_CONFIG_PARAMETERS: `'url.${mirror}.insteadOf'='${origin}'` }),
+    ],
+    [
+      'GIT_CONFIG_COUNT/KEY/VALUE',
+      () => ({
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: `url.${mirror}.insteadOf`,
+        GIT_CONFIG_VALUE_0: origin,
+      }),
+    ],
+  ])('does not pass a %s redirect through to a gate', async (_name, mkEnv) => {
+    const env: Record<string, string> = mkEnv();
+    expect(originSha).not.toBe(mirrorSha); // or the assertions below prove nothing
+
+    // Demonstrate the hazard is real: unscrubbed, the read lands on the stale
+    // mirror and reports its sha with a straight face.
+    expect(git(['ls-remote', 'origin', 'refs/heads/main'], clone, env)).toContain(mirrorSha);
+
+    // ...then that a gate launched by rloop is immune to it.
+    Object.assign(process.env, env);
+    try {
+      const out = await runCommand('git ls-remote origin refs/heads/main', {
+        cwd: clone,
+        timeoutMs: 15_000,
+      });
+      expect(out.output).toContain(originSha);
+      expect(out.output).not.toContain(mirrorSha);
+    } finally {
+      for (const k of Object.keys(env)) delete process.env[k];
+    }
+  });
+});
+
 describe('assertRepoRoot', () => {
   it('accepts the repository root', async () => {
     await expect(assertRepoRoot(repoA)).resolves.toBeUndefined();

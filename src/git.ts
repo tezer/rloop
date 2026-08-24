@@ -34,6 +34,31 @@ export const GIT_ENV_OVERRIDES = Object.freeze({
   GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
   GIT_CEILING_DIRECTORIES: undefined,
   GIT_NAMESPACE: undefined,
+  // GIT_CONFIG_* is the same hazard one variable over, and was missing from the
+  // first version of this list. Demonstrated: GIT_CONFIG_GLOBAL pointing at a
+  // config with a `url.<other>.insteadOf` rewrite redirects fetch and ls-remote
+  // TOGETHER, so a gate that cross-checks one against the other agrees with
+  // itself while reading a foreign remote. KEY_n/VALUE_n need no entry — git
+  // reads them only when COUNT is set.
+  GIT_CONFIG_COUNT: undefined,
+  GIT_CONFIG_GLOBAL: undefined,
+  GIT_CONFIG_SYSTEM: undefined,
+  // UNPINNED, deliberately: deleting this line leaves the suite green.
+  // Its hazard is SUPPRESSION, not redirection — an inherited
+  // GIT_CONFIG_NOSYSTEM=1 makes git ignore /etc/gitconfig, dropping whatever an
+  // admin put there. The `url.<mirror>.insteadOf` payload the other four cases
+  // use cannot express that, and a test cannot write a real system config. It
+  // stays in the scrub because it belongs to the family; do not read its
+  // presence as evidence anything checks it.
+  GIT_CONFIG_NOSYSTEM: undefined,
+  // The one a first GIT_CONFIG_* pass misses. GIT_CONFIG_PARAMETERS is what
+  // `git -c k=v` propagates to subprocesses, and it is an INDEPENDENT channel
+  // that GIT_CONFIG_COUNT does not gate — so "KEY_n/VALUE_n need no entry"
+  // covers only part of the family. Demonstrated: a
+  // `url.<foreign>.insteadOf=<origin>` payload through this variable redirects
+  // fetch and ls-remote together, so a gate cross-checking one against the
+  // other agrees with itself against a foreign remote.
+  GIT_CONFIG_PARAMETERS: undefined,
 });
 
 async function git(args: string[], cwd: string): Promise<string> {
