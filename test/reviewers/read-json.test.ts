@@ -32,12 +32,25 @@ describe('readProviderJson', () => {
     expect(r.spawnError).toBeNull();
   });
 
-  it('reports a spawn failure rather than throwing', async () => {
+  it('propagates a non-zero exit from a missing binary', async () => {
     const r = await readProviderJson('definitely-not-a-real-binary-xyz', {
       cwd: process.cwd(),
       timeoutMs: 15_000,
     });
     expect(r.exitCode).not.toBe(0);
+  });
+
+  it('reports a spawn failure rather than throwing', async () => {
+    // A missing BINARY does not reach this path: `bash -c missing-thing`
+    // spawns bash fine and exits 127 through `close`. A missing CWD does —
+    // bash itself cannot be spawned, and `error` fires with ENOENT.
+    const r = await readProviderJson('node --version', {
+      cwd: '/nonexistent-directory-for-rloop-spawn-test',
+      timeoutMs: 15_000,
+    });
+    expect(r.spawnError).not.toBeNull();
+    expect(r.spawnError?.message).toMatch(/ENOENT/);
+    expect(r.exitCode).toBeNull();
   });
 
   it('times out and says so', async () => {
