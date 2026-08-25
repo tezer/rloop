@@ -93,6 +93,12 @@ describe('runCommandReviewer', () => {
     const r = await go('bad-schema-exit-1.mjs');
     expect(r.status).toBe('unavailable');
     expect(r.unavailableReason).toBe('crashed');
+    // The fixture writes NOTHING to stderr — the case the schema failure is
+    // hardest to diagnose in, and the one a prior fix silently dropped
+    // (`detail` used to be built from just the exit code and an empty
+    // stderr slice). The precise schema failure computed a few lines up in
+    // command.ts must survive into `detail`, not just the exit code.
+    expect(r.detail).toContain("Unrecognized key(s) in object: 'results'");
   });
 
   it('reports findings, not clean or unavailable, when a parsed document has blocking findings and a non-zero exit', async () => {

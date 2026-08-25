@@ -13,6 +13,13 @@ export interface CommandReviewer {
 const short = (sha: string) => sha.slice(0, 7);
 
 /**
+ * Cap a diagnostic snippet so one enormous message (a zod error listing every
+ * offending key, or a stack trace on stderr) can't dominate a `detail` line
+ * that is rendered inline in a blocker message and in `pr status` output.
+ */
+const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}…` : s);
+
+/**
  * Run one command reviewer and classify the outcome.
  *
  * Classification order matters and is the whole contract:
@@ -79,14 +86,26 @@ export async function runCommandReviewer(
   const parsed = parseProviderDocument(run.stdout);
   if (!parsed.ok) {
     if (run.exitCode !== 0) {
+      // The parse/schema failure is the precise diagnosis — computed a few
+      // lines up, and the one piece of information that actually explains
+      // what went wrong. It must not be dropped in favor of the exit code
+      // and stderr alone: those two are frequently empty (a schema failure
+      // on a well-formed document writes nothing to stderr), which without
+      // parsed.error left the operator staring at "exited 1 without a usable
+      // document:" followed by nothing.
+      const stderrSnippet = run.stderr.trim();
+      const detail = stderrSnippet
+        ? `exited ${run.exitCode} without a usable document: ${truncate(parsed.error)} ` +
+          `(stderr: ${truncate(stderrSnippet)})`
+        : `exited ${run.exitCode} without a usable document: ${truncate(parsed.error)}`;
       return assertReasonCoupling({
         ...base,
         status: 'unavailable',
         unavailableReason: 'crashed',
-        detail: `exited ${run.exitCode} without a usable document: ${run.stderr.slice(0, 200)}`,
+        detail,
       });
     }
-    return assertReasonCoupling({ ...base, status: 'malformed', detail: parsed.error });
+    return assertReasonCoupling({ ...base, status: 'malformed', detail: truncate(parsed.error) });
   }
 
   if (parsed.doc.sha !== opts.headSha) {
