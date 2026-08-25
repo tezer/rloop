@@ -42,7 +42,7 @@ describe('runCommandReviewer', () => {
     expect(r.detail).toContain('deadbeef');
   });
 
-  it('reports unavailable when the command cannot be spawned', async () => {
+  it('reports unavailable when the command is not found (bash exits 127)', async () => {
     const r = await runCommandReviewer(
       { ...rev('clean.mjs'), run: 'definitely-not-a-real-binary-xyz' },
       { repoRoot: process.cwd(), headSha: HEAD },
@@ -80,6 +80,13 @@ describe('runCommandReviewer', () => {
     const r = await go('wrong-sha.mjs');
     expect(r.status).toBe('stale');
     expect(r.detail).toContain('c'.repeat(7));
+  });
+
+  it('prefers stale over findings when the provider reviewed another commit', async () => {
+    // Order dependence, and it is real: findings against a non-head tree
+    // must not be reported as findings against head.
+    const r = await go('wrong-sha-with-findings.mjs');
+    expect(r.status).toBe('stale');
   });
 
   it('times out into unavailable', async () => {
