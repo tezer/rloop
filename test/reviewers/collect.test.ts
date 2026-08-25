@@ -1,0 +1,88 @@
+import { describe, expect, it } from 'vitest';
+import { loadConfig } from '../../src/config.js';
+import type { ReviewVerdict } from '../../src/forge/types.js';
+import { collectReviewerReports, degradationOf } from '../../src/reviewers/collect.js';
+
+const HEAD = 'a'.repeat(40);
+const OLD = 'b'.repeat(40);
+const base = `
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^ok$"]
+`;
+const forgeCfg = loadConfig(`${base}
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+`);
+const review = (over: Partial<ReviewVerdict> = {}): ReviewVerdict => ({
+  author: 'copilot-pull-request-reviewer',
+  state: 'COMMENTED',
+  sha: HEAD,
+  submittedAt: '2026-08-25T10:00:00Z',
+  ...over,
+});
+const collect = (cfg = forgeCfg, reviews: ReviewVerdict[] = []) =>
+  collectReviewerReports(cfg, { repoRoot: process.cwd(), headSha: HEAD, reviews });
+
+describe('collectReviewerReports — forge', () => {
+  it('reports absent when the reviewer has not reviewed', async () => {
+    expect((await collect()).at(0)!.status).toBe('absent');
+  });
+
+  it('reports clean for a COMMENTED review under any_verdict', async () => {
+    expect((await collect(forgeCfg, [review()])).at(0)!.status).toBe('clean');
+  });
+
+  it('reports findings for a COMMENTED review under approved', async () => {
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: approved
+`);
+    expect((await collect(cfg, [review()])).at(0)!.status).toBe('findings');
+  });
+
+  it('reports stale when the latest review is against another sha', async () => {
+    expect((await collect(forgeCfg, [review({ sha: OLD })])).at(0)!.status).toBe('stale');
+  });
+
+  it('uses the LATEST review, not the first', async () => {
+    const reports = await collect(forgeCfg, [
+      review({ state: 'CHANGES_REQUESTED', submittedAt: '2026-08-25T09:00:00Z' }),
+      review({ state: 'APPROVED', submittedAt: '2026-08-25T11:00:00Z' }),
+    ]);
+    expect(reports.at(0)!.status).toBe('clean');
+  });
+
+  it('leaves findings empty for a forge reviewer', async () => {
+    expect((await collect(forgeCfg, [review()])).at(0)!.findings).toEqual([]);
+  });
+});
+
+describe('degradationOf', () => {
+  it('is not_configured when no reviewers are declared', async () => {
+    const cfg = loadConfig(base);
+    const d = degradationOf(await collectReviewerReports(cfg, {
+      repoRoot: process.cwd(), headSha: HEAD, reviews: [],
+    }), cfg);
+    expect(d?.reason).toBe('not_configured');
+  });
+
+  it('is null when a reviewer reported, even with findings', async () => {
+    expect(degradationOf(await collect(forgeCfg, [review()]), forgeCfg)).toBeNull();
+  });
+
+  it('is NOT degraded merely because a forge reviewer is absent', async () => {
+    // Absence is already a merge blocker with its own code. Calling it
+    // degradation would report "no provider available" when one is configured
+    // and simply has not answered yet.
+    expect(degradationOf(await collect(), forgeCfg)).toBeNull();
+  });
+});
