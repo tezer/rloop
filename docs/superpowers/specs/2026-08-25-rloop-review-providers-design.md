@@ -1,6 +1,34 @@
 # Pluggable review providers, and honest degradation
 
-**Status:** design, approved 2026-08-25. Not implemented.
+**Status:** implemented and shipped in 0.3.0 (PR #3, merged 2026-08-25).
+
+## What implementation falsified
+
+Kept as the design record it was, with the parts that turned out wrong named
+here rather than silently left standing. Read the sections below knowing this:
+
+- **The `.rloop/reviews/<name>.json` store was never built.** It is described
+  below as the mechanism by which findings "reach zero by disappearing", but it
+  is informational only — the merge decision needs "are there blocking findings
+  at head", which every run answers by itself. Dropped during planning; the
+  disappearance semantics survive without persistence.
+- **The classification table below is wrong about schema failures.** It gives
+  "parsed but fails the schema → `malformed`" as an unconditional rule.
+  `parseProviderDocument` returns the same shape for invalid JSON and for a
+  schema failure, so both are gated on the exit code: unusable output with a
+  non-zero exit is `unavailable`, not `malformed`. Corrected in the shipped
+  docstring and README.
+- **The blocker-code section contradicted the report shape it specifies.** It
+  says `reviewer_changes_requested` and `reviewer_not_approved` "keep their
+  current meaning", while the `ReviewerReport` defined here maps both
+  CHANGES_REQUESTED and a `required_state` mismatch to `status: 'findings'` —
+  leaving the merge gate no way to tell them apart. Resolved in implementation
+  by adding a typed `FindingsReason`.
+- **A non-zero exit with a parseable document is not covered here at all.**
+  The shipped rule: a non-zero exit may never produce `clean`. With findings it
+  is `findings` (linters exit non-zero because they found something); with
+  nothing blocking it is `unavailable`, because the provider's own signals
+  contradict each other.
 
 ## The problem
 

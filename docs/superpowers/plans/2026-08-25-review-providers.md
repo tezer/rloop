@@ -1,5 +1,39 @@
 # Pluggable Review Providers Implementation Plan
 
+**Status:** executed. Shipped in 0.3.0 (PR #3, merged 2026-08-25).
+
+## What execution falsified
+
+Twelve defects surfaced while running this plan, and **every one was a hole in
+what the plan asked to be PROVEN — none was a bug in code an implementer
+wrote.** They are listed here because a plan read later as authoritative is
+worse than no plan. The full record, with evidence for each, is in the
+execution ledger under `.superpowers/sdd/2026-08-25-review-providers/`.
+
+The ones that would mislead a reader of the tasks below:
+
+- **Two mutation checks did not discriminate.** Task 2's domain-tag mutation
+  and Task 3's `spawnError` test both passed with the guard deleted. Task 3's
+  used a missing *binary*, but `bash -c <missing>` spawns bash successfully and
+  exits 127, so the `error` handler never fired; an unspawnable *cwd* is what
+  reaches it.
+- **One load-bearing guard is absent from the plan entirely** — the separator
+  between path and title in `fingerprint()`. Without it `'a'+'bc'` and
+  `'ab'+'c'` collide.
+- **Task 7's blocker-code list contradicts the report shape** it builds on, in
+  the same way the spec does. Resolved by adding `FindingsReason`.
+- **Task 5's `collectWarnings` text, given here verbatim to copy, asserted a
+  safety property the code did not have** — it named a `reviewer_degraded`
+  blocker that did not exist until Task 7.
+- **Task 2's separator instructions produce a raw NUL byte** if typed with the
+  Write tool, which silently turns a source file binary.
+- Task 4's step text says "PASS (10 tests)" for an 11-test file; Task 8 cites
+  duplicated filter logic in `report.ts`, where there is none — the second copy
+  was in `merge-gate.ts`.
+
+The out-of-scope section at the foot of this plan is accurate: the
+`.rloop/reviews` store was deliberately never built.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let rloop collect external review verdicts from a local command as well as a forge bot, and degrade honestly — loudly, and never into an automatic merge — when no provider is configured or available.
