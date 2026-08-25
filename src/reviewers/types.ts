@@ -102,8 +102,9 @@ export interface ReviewerReport {
 }
 
 /**
- * Enforce the one invariant the type system cannot: `findingsReason` is
- * non-null exactly when `status` is `'findings'`. A discriminated union
+ * Enforce the two invariants the type system cannot: `findingsReason` is
+ * non-null exactly when `status` is `'findings'`, and `unavailableReason` is
+ * non-null exactly when `status` is `'unavailable'`. A discriminated union
  * would say this at the type level, but was deliberately not chosen here —
  * every other field (`sha`, `findings`, `detail`) is shared across statuses,
  * so a union would either duplicate them per-variant or leave the type no
@@ -113,18 +114,35 @@ export interface ReviewerReport {
  * every return point instead, so a factory that drifts — `status: 'clean'`
  * with a stale `findingsReason` left over from a copy-pasted branch, or
  * `status: 'findings'` with none set — fails loudly at the source instead of
- * reaching `evaluateMergeGate`, which trusts this coupling without
- * rechecking it.
+ * reaching `evaluateMergeGate`, which trusts both couplings without
+ * rechecking them.
+ *
+ * Named for what it checks now, not for the one field it originally checked:
+ * `unavailableReason` was added after this function (and its
+ * `findingsReason`-only name) already existed, and every call site happened
+ * to already set it correctly — so there was no live bug, just an assertion
+ * that had quietly stopped covering everything its neighbour field promised.
  */
-export function assertFindingsReasonCoupling(report: ReviewerReport): ReviewerReport {
-  const hasReason = report.findingsReason !== null;
+export function assertReasonCoupling(report: ReviewerReport): ReviewerReport {
+  const hasFindingsReason = report.findingsReason !== null;
   const isFindings = report.status === 'findings';
-  if (hasReason !== isFindings) {
+  if (hasFindingsReason !== isFindings) {
     throw new Error(
       `reviewer "${report.name}": findingsReason (${String(report.findingsReason)}) is ` +
         `inconsistent with status (${report.status}) — findingsReason must be set exactly ` +
         `when status is "findings".`,
     );
   }
+
+  const hasUnavailableReason = report.unavailableReason !== null;
+  const isUnavailable = report.status === 'unavailable';
+  if (hasUnavailableReason !== isUnavailable) {
+    throw new Error(
+      `reviewer "${report.name}": unavailableReason (${String(report.unavailableReason)}) is ` +
+        `inconsistent with status (${report.status}) — unavailableReason must be set exactly ` +
+        `when status is "unavailable".`,
+    );
+  }
+
   return report;
 }

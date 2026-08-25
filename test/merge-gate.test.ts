@@ -4,7 +4,7 @@ import { loadConfig, type RloopConfig } from '../src/config.js';
 import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from '../src/forge/types.js';
 import { evaluateMergeGate, type BlockerCode } from '../src/merge-gate.js';
 import { collectReviewerReports, degradationOf } from '../src/reviewers/collect.js';
-import { assertFindingsReasonCoupling, type Finding, type ReviewerReport, type ReviewerStatus } from '../src/reviewers/types.js';
+import { assertReasonCoupling, type Finding, type ReviewerReport, type ReviewerStatus } from '../src/reviewers/types.js';
 import type { GateRunResult } from '../src/types.js';
 
 const HEAD = 'a'.repeat(40);
@@ -437,7 +437,7 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
  * Defaults `findingsReason` (and `unavailableReason`) from `status`, so a
  * test that only cares about, say, `reviewer_findings_open` does not also
  * have to remember the findingsReason/status coupling. The result is then
- * run through `assertFindingsReasonCoupling` — the same invariant check
+ * run through `assertReasonCoupling` — the same invariant check
  * `command.ts` and `collect.ts` apply at their own construction sites — so
  * this helper is a real call site of the assertion, not just a plain object
  * literal that could drift out of sync with it unnoticed. Previously this
@@ -452,7 +452,7 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
  */
 const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => {
   const status = over.status ?? 'clean';
-  return assertFindingsReasonCoupling({
+  return assertReasonCoupling({
     name: 'copilot',
     kind: 'forge',
     status: 'clean',
@@ -790,11 +790,11 @@ merge:
 
   it('the report() helper itself enforces the findingsReason/status coupling (I2)', () => {
     // This file's own `report()` helper used to default findingsReason to
-    // `null` unconditionally and never call assertFindingsReasonCoupling, so
+    // `null` unconditionally and never call assertReasonCoupling, so
     // `report({ status: 'findings' })` (see 'blocks open findings' above)
     // silently built an inconsistent ReviewerReport and fed it straight to
     // evaluateMergeGate — bypassing the exact invariant
-    // assertFindingsReasonCoupling exists to enforce. Now the helper routes
+    // assertReasonCoupling exists to enforce. Now the helper routes
     // every report it builds through that assertion, so a deliberately
     // inconsistent override (findingsReason forced back to null on a
     // 'findings' status) throws here, at the test's own construction site,

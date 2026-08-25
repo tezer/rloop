@@ -1,7 +1,7 @@
 import type { RloopConfig } from '../config.js';
 import { matchesReviewer, type ReviewVerdict } from '../forge/types.js';
 import { runCommandReviewer } from './command.js';
-import { assertFindingsReasonCoupling, type ReviewerReport } from './types.js';
+import { assertReasonCoupling, type ReviewerReport } from './types.js';
 
 export type DegradedReason = 'not_configured' | 'unavailable' | 'malformed';
 
@@ -54,7 +54,7 @@ function forgeReport(
   const theirs = opts.reviews.filter((r) => matchesReviewer(rev.login, r.author));
 
   if (theirs.length === 0) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'absent',
       sha: null,
@@ -65,7 +65,7 @@ function forgeReport(
   const latest = theirs.reduce((a, b) => ((b.submittedAt ?? '') >= (a.submittedAt ?? '') ? b : a));
 
   if (latest.sha !== opts.headSha) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'stale',
       sha: latest.sha,
@@ -77,7 +77,7 @@ function forgeReport(
   // gated by merge.require_threads_resolved. Two mechanisms for one fact is
   // how they drift apart.
   if (latest.state === 'CHANGES_REQUESTED') {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'findings',
       sha: latest.sha,
@@ -86,7 +86,7 @@ function forgeReport(
     });
   }
   if (rev.required_state === 'approved' && latest.state !== 'APPROVED') {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'findings',
       sha: latest.sha,
@@ -94,7 +94,7 @@ function forgeReport(
       findingsReason: 'not_approved',
     });
   }
-  return assertFindingsReasonCoupling({ ...base, status: 'clean', sha: latest.sha, detail: null });
+  return assertReasonCoupling({ ...base, status: 'clean', sha: latest.sha, detail: null });
 }
 
 /**

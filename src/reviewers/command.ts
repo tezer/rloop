@@ -1,7 +1,7 @@
 import { parseProviderDocument } from './document.js';
 import { fingerprint } from './fingerprint.js';
 import { readProviderJson } from './read-json.js';
-import { assertFindingsReasonCoupling, isBlocking, type Finding, type ReviewerReport } from './types.js';
+import { assertReasonCoupling, isBlocking, type Finding, type ReviewerReport } from './types.js';
 
 export interface CommandReviewer {
   name: string;
@@ -60,7 +60,7 @@ export async function runCommandReviewer(
   });
 
   if (run.spawnError) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'unavailable',
       unavailableReason: 'never_ran',
@@ -68,7 +68,7 @@ export async function runCommandReviewer(
     });
   }
   if (run.timedOut) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'unavailable',
       unavailableReason: 'never_ran',
@@ -79,18 +79,18 @@ export async function runCommandReviewer(
   const parsed = parseProviderDocument(run.stdout);
   if (!parsed.ok) {
     if (run.exitCode !== 0) {
-      return assertFindingsReasonCoupling({
+      return assertReasonCoupling({
         ...base,
         status: 'unavailable',
         unavailableReason: 'crashed',
         detail: `exited ${run.exitCode} without a usable document: ${run.stderr.slice(0, 200)}`,
       });
     }
-    return assertFindingsReasonCoupling({ ...base, status: 'malformed', detail: parsed.error });
+    return assertReasonCoupling({ ...base, status: 'malformed', detail: parsed.error });
   }
 
   if (parsed.doc.sha !== opts.headSha) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'stale',
       sha: parsed.doc.sha,
@@ -125,7 +125,7 @@ export async function runCommandReviewer(
   // disagree, so `clean` would be trusting a document a reviewer that just
   // reported failure produced. That is `unavailable`, not a pass.
   if (blocking.length === 0 && run.exitCode !== 0) {
-    return assertFindingsReasonCoupling({
+    return assertReasonCoupling({
       ...base,
       status: 'unavailable',
       unavailableReason: 'contradicted',
@@ -149,7 +149,7 @@ export async function runCommandReviewer(
       ? `dismissals matching nothing at head (delete them): ${unmatched.join(', ')}`
       : null;
 
-  return assertFindingsReasonCoupling({
+  return assertReasonCoupling({
     ...base,
     status: blocking.length > 0 ? 'findings' : 'clean',
     sha: parsed.doc.sha,

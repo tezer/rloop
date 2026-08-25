@@ -74,6 +74,16 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
     const collect = (buf: Buffer) => chunks.push(buf.toString('utf8'));
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
+    // Without these, a stream error — an EPIPE, or one racing the timeout's
+    // own SIGKILL below — is an unhandled 'error' event on a Readable. That
+    // throws synchronously out of Node's stream machinery, past this
+    // function's Promise executor, uncaught by anything: every gate rloop
+    // runs, including rloop's own self-gating, goes through this function,
+    // so that crash takes down the whole process rather than failing the one
+    // gate that hit it. See src/reviewers/read-json.ts for the identical
+    // hazard on the provider path — same invariant, same fix.
+    child.stdout.on('error', () => {});
+    child.stderr.on('error', () => {});
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -122,6 +132,15 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
     child.on('exit', (code) => {
       exitedWith = code;
       if (stdoutEnded && stderrEnded) {
+        settle(code, null);
+        return;
+      }
+      if (timedOut) {
+        // The timeout above already SIGKILLed the whole process group, so
+        // there is no writer left to drain — waiting out DRAIN_GRACE_MS here
+        // would just let a timed-out command overshoot opts.timeoutMs by up
+        // to that long for nothing. Settle immediately on whatever arrived
+        // before the kill.
         settle(code, null);
         return;
       }

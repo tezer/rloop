@@ -124,6 +124,15 @@ export function readProviderJson(
         settle(code, null);
         return;
       }
+      if (timedOut) {
+        // Same reasoning as src/exec.ts: the timeout above already SIGKILLed
+        // the whole process group, so nothing is left to drain, and waiting
+        // out DRAIN_GRACE_MS here would just let a timed-out provider
+        // overshoot opts.timeoutMs for nothing. Settle on whatever arrived
+        // before the kill.
+        settle(code, null);
+        return;
+      }
       exitPending = true;
       graceTimer = setTimeout(() => settle(code, null), DRAIN_GRACE_MS);
     });
