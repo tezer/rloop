@@ -39,11 +39,13 @@ describe('fingerprint', () => {
     );
   });
 
-  it('does not confuse an id with a path+title that concatenate to the same string', () => {
-    // Without the `id`/`pt` domain tags these collide exactly: the id branch
-    // yields "src/a.tsx" and the pt branch yields "src/a.ts" + "x". Verified —
-    // both hash to 633790c1 with the tags removed.
-    expect(fingerprint({ id: 'src/a.tsx', title: 'anything' })).not.toBe(
+  it('does not confuse an id that CONTAINS the separator with a path+title', () => {
+    // What the id/pt domain tags actually guard, and the only input class
+    // that reaches it. A provider id holding a literal NUL is pathological,
+    // but it is the one case where the two bases would otherwise be byte
+    // identical: without the tags both sides hash to 1ce8a035.
+    const SEP = String.fromCharCode(0);
+    expect(fingerprint({ id: `src/a.ts${SEP}x`, title: 'anything' })).not.toBe(
       fingerprint({ path: 'src/a.ts', title: 'x' }),
     );
   });
