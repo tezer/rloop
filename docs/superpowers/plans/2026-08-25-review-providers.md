@@ -7,8 +7,13 @@
 Twelve defects surfaced while running this plan, and **every one was a hole in
 what the plan asked to be PROVEN — none was a bug in code an implementer
 wrote.** They are listed here because a plan read later as authoritative is
-worse than no plan. The full record, with evidence for each, is in the
-execution ledger under `.superpowers/sdd/2026-08-25-review-providers/`.
+worse than no plan.
+
+A fuller record — every defect with the command output that established it —
+was kept in an execution ledger at `.superpowers/sdd/2026-08-25-review-providers/`.
+**That path is gitignored and exists only on the machine that ran the plan; do
+not go looking for it in this repository.** Everything a reader needs is
+therefore reproduced below rather than referenced.
 
 The ones that would mislead a reader of the tasks below:
 
