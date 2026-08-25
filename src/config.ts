@@ -97,10 +97,11 @@ const mergeSchema = z
     require_threads_resolved: z.boolean().default(true),
 
     /**
-     * DEPRECATED, and kept working deliberately: rloop 0.2.1 is published and
-     * configs in the wild set this. `loadConfig` desugars each login here into
-     * a `kind: forge` `reviewers:` entry (see `desugarDeprecatedReviewers`),
-     * so new code should be written against `reviewers:`.
+     * DEPRECATED, and kept working deliberately: this key shipped in a
+     * published release and configs in the wild set it. `loadConfig` desugars
+     * each login here into a `kind: forge` `reviewers:` entry (see
+     * `desugarDeprecatedReviewers`), so new code should be written against
+     * `reviewers:`.
      *
      * Both forms present is a config error rather than a merge — two sources
      * of truth for who must review is a config whose author cannot predict
@@ -419,8 +420,8 @@ export function loadConfig(yamlText: string, sourcePath = '<config>'): RloopConf
  * on the returned config object rather than cleared — `collectWarnings`
  * still reports them, and readers that have not yet moved to `reviewers:`
  * still read them directly. Removing them would be the breaking change this
- * function exists to avoid: rloop 0.2.1 is published, and configs in the
- * wild set them.
+ * function exists to avoid: these keys shipped in a published release, and
+ * configs in the wild set them.
  */
 function desugarDeprecatedReviewers(cfg: RloopConfig): RloopConfig {
   if (cfg.reviewers.length > 0 || cfg.merge.required_reviewers.length === 0) return cfg;

@@ -1,7 +1,7 @@
 import type { RloopConfig } from '../config.js';
 import { matchesReviewer, type ReviewVerdict } from '../forge/types.js';
 import { runCommandReviewer } from './command.js';
-import type { ReviewerReport } from './types.js';
+import { assertFindingsReasonCoupling, type ReviewerReport } from './types.js';
 
 export type DegradedReason = 'not_configured' | 'unavailable' | 'malformed';
 
@@ -46,47 +46,47 @@ function forgeReport(
   const theirs = opts.reviews.filter((r) => matchesReviewer(rev.login, r.author));
 
   if (theirs.length === 0) {
-    return {
+    return assertFindingsReasonCoupling({
       ...base,
       status: 'absent',
       sha: null,
       detail: `no review from "${rev.login}" yet. Absence of a verdict is not approval.`,
-    };
+    });
   }
 
   const latest = theirs.reduce((a, b) => ((b.submittedAt ?? '') >= (a.submittedAt ?? '') ? b : a));
 
   if (latest.sha !== opts.headSha) {
-    return {
+    return assertFindingsReasonCoupling({
       ...base,
       status: 'stale',
       sha: latest.sha,
       detail: `reviewed ${short(latest.sha)} but head is ${short(opts.headSha)}`,
-    };
+    });
   }
 
   // `findings` stays empty: a forge reviewer's findings are review threads,
   // gated by merge.require_threads_resolved. Two mechanisms for one fact is
   // how they drift apart.
   if (latest.state === 'CHANGES_REQUESTED') {
-    return {
+    return assertFindingsReasonCoupling({
       ...base,
       status: 'findings',
       sha: latest.sha,
       detail: 'changes requested',
       findingsReason: 'changes_requested',
-    };
+    });
   }
   if (rev.required_state === 'approved' && latest.state !== 'APPROVED') {
-    return {
+    return assertFindingsReasonCoupling({
       ...base,
       status: 'findings',
       sha: latest.sha,
       detail: `left a ${latest.state} review, and required_state is "approved"`,
       findingsReason: 'not_approved',
-    };
+    });
   }
-  return { ...base, status: 'clean', sha: latest.sha, detail: null };
+  return assertFindingsReasonCoupling({ ...base, status: 'clean', sha: latest.sha, detail: null });
 }
 
 /**

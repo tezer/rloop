@@ -517,8 +517,98 @@ describe('reviewer reports', () => {
     expect(c).not.toContain('reviewer_not_approved');
   });
 
+  it('does not claim "has open findings" for a forge reviewer that requested changes — it has none, they are review threads', () => {
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [
+        report({
+          name: 'copilot-pull-request-reviewer',
+          status: 'findings',
+          findingsReason: 'changes_requested',
+          detail: 'changes requested',
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    const blocker = d.blockers.find((b) => b.code === 'reviewer_changes_requested');
+    expect(blocker?.message).not.toContain('has open findings');
+    expect(blocker?.message).toContain('requested changes');
+  });
+
+  it('names required_state, not "has open findings", for a forge reviewer that reviewed without approving', () => {
+    const d = evaluateMergeGate({
+      cfg: cfg(), // desugars to a `copilot-pull-request-reviewer` entry with required_state: any_verdict
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [
+        report({
+          name: 'copilot-pull-request-reviewer',
+          status: 'findings',
+          findingsReason: 'not_approved',
+          detail: 'left a COMMENTED review, and required_state is "any_verdict"',
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    const blocker = d.blockers.find((b) => b.code === 'reviewer_not_approved');
+    expect(blocker?.message).not.toContain('has open findings');
+    expect(blocker?.message).toContain('reviewed without approving');
+    expect(blocker?.message).toContain('required_state: "any_verdict"');
+  });
+
+  it('keeps the "has open findings" wording for provider_findings — a command reviewer really does have findings', () => {
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [
+        report({
+          kind: 'command',
+          status: 'findings',
+          findingsReason: 'provider_findings',
+          findings: [finding({ severity: 'critical', title: 'Unchecked null' })],
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    const blocker = d.blockers.find((b) => b.code === 'reviewer_findings_open');
+    expect(blocker?.message).toContain('has open findings');
+    expect(blocker?.message).toContain('Unchecked null');
+  });
+
   it('blocks a stale reviewer', () => {
     expect(blockerCodes({ reviewerReports: [report({ status: 'stale', sha: OLD })] })).toContain('reviewer_stale');
+  });
+
+  it('tells a forge reviewer to re-request review, and a command reviewer to re-run instead', () => {
+    // "re-request review on the current commit" is meaningless for a
+    // `kind: command` reviewer — there is no review to re-request, only a
+    // re-run. The advice must branch on kind.
+    const forgeStale = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [report({ kind: 'forge', status: 'stale', sha: OLD })],
+      degradation: null,
+      threads: [],
+    }).blockers.find((b) => b.code === 'reviewer_stale');
+    expect(forgeStale?.message).toContain('re-request review');
+
+    const commandStale = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [report({ kind: 'command', status: 'stale', sha: OLD })],
+      degradation: null,
+      threads: [],
+    }).blockers.find((b) => b.code === 'reviewer_stale');
+    expect(commandStale?.message).not.toContain('re-request review');
+    expect(commandStale?.message).toContain('re-run');
   });
 
   it('blocks an absent reviewer', () => {
@@ -570,7 +660,7 @@ merge:
   it('samples only blocking findings, not minors that never blocked', () => {
     // Four minors and one important: a sample drawn from "not dismissed"
     // alone names three minors and buries the only real blocker under
-    // "(+2 more)". The sample must be drawn from BLOCKING_SEVERITIES.
+    // "(+2 more)". The sample must be drawn from findings where isBlocking().
     const minors = ['first minor', 'second minor', 'third minor', 'fourth minor'].map((title, i) =>
       finding({ severity: 'minor', title, fingerprint: `min0000${i}` }),
     );

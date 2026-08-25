@@ -2,14 +2,31 @@
 export type Severity = 'critical' | 'important' | 'minor';
 
 /**
- * Severities that block a merge.
+ * Whether each severity blocks a merge.
  *
- * `minor` is deliberately absent: the loop prompt acts "on any critical or
+ * A total map over `Severity`, not a `readonly Severity[]` of the blocking
+ * ones: a plain array fails OPEN — adding a fourth severity to the union
+ * silently makes it non-blocking (absent from the list) with no compile
+ * error, which is the wrong default direction for a tool whose job is
+ * refusing unsafe merges. This map forces a decision at every call site that
+ * adds a severity, because TypeScript rejects a `Record<Severity, boolean>`
+ * that is missing a key.
+ *
+ * `minor` is deliberately `false`: the loop prompt acts "on any critical or
  * important finding" and leaves minor ones to its convergence rules. A
  * minor-only report is clean, and its findings are still reported so the agent
  * can choose to fix them.
  */
-export const BLOCKING_SEVERITIES: readonly Severity[] = ['critical', 'important'];
+const BLOCKING: Record<Severity, boolean> = {
+  critical: true,
+  important: true,
+  minor: false,
+};
+
+/** Whether a finding of this severity blocks a merge. See `BLOCKING`. */
+export function isBlocking(severity: Severity): boolean {
+  return BLOCKING[severity];
+}
 
 /**
  * WHY a reviewer is unhappy, when `status` is `findings`.
@@ -64,4 +81,32 @@ export interface ReviewerReport {
   detail: string | null;
   /** Set exactly when `status` is `findings`; null otherwise. */
   findingsReason: FindingsReason | null;
+}
+
+/**
+ * Enforce the one invariant the type system cannot: `findingsReason` is
+ * non-null exactly when `status` is `'findings'`. A discriminated union
+ * would say this at the type level, but was deliberately not chosen here —
+ * every other field (`sha`, `findings`, `detail`) is shared across statuses,
+ * so a union would either duplicate them per-variant or leave the type no
+ * more precise than this interface already is, for real added complexity.
+ * The two call sites that construct a `ReviewerReport` (`collect.ts`'s
+ * `forgeReport`, `command.ts`'s `runCommandReviewer`) each call this at
+ * every return point instead, so a factory that drifts — `status: 'clean'`
+ * with a stale `findingsReason` left over from a copy-pasted branch, or
+ * `status: 'findings'` with none set — fails loudly at the source instead of
+ * reaching `evaluateMergeGate`, which trusts this coupling without
+ * rechecking it.
+ */
+export function assertFindingsReasonCoupling(report: ReviewerReport): ReviewerReport {
+  const hasReason = report.findingsReason !== null;
+  const isFindings = report.status === 'findings';
+  if (hasReason !== isFindings) {
+    throw new Error(
+      `reviewer "${report.name}": findingsReason (${String(report.findingsReason)}) is ` +
+        `inconsistent with status (${report.status}) — findingsReason must be set exactly ` +
+        `when status is "findings".`,
+    );
+  }
+  return report;
 }

@@ -83,6 +83,29 @@ describe('runCommandReviewer', () => {
     expect((await go('bad-schema-exit-1.mjs')).status).toBe('unavailable');
   });
 
+  it('reports findings, not clean or unavailable, when a parsed document has blocking findings and a non-zero exit', async () => {
+    // Linters conventionally exit non-zero BECAUSE they found something. A
+    // non-zero exit may never produce `clean`, but it must not override a
+    // document that already reports blocking findings either — the document
+    // is trusted here, same as the timeout-vs-schema precedence above.
+    const r = await go('findings-exit-1.mjs');
+    expect(r.status).toBe('findings');
+    expect(r.findingsReason).toBe('provider_findings');
+    expect(r.findings).toHaveLength(1);
+  });
+
+  it('reports unavailable, not clean, when a parsed document reports nothing blocking but the exit is non-zero', async () => {
+    // The rule this test pins: a non-zero exit may NEVER result in `clean`.
+    // A well-formed, schema-valid document with no blocking findings would
+    // otherwise be `clean` — but exiting non-zero means the provider's own
+    // signals contradict each other, and rloop does not resolve that
+    // contradiction in the merge-permitting direction.
+    const r = await go('clean-exit-1.mjs');
+    expect(r.status).toBe('unavailable');
+    expect(r.findingsReason).toBeNull();
+    expect(r.detail).toMatch(/contradict/i);
+  });
+
   it('reports stale when the echoed sha is not the head', async () => {
     const r = await go('wrong-sha.mjs');
     expect(r.status).toBe('stale');

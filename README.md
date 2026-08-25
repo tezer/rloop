@@ -509,14 +509,26 @@ Order matters — this table is `runCommandReviewer`'s whole contract:
 | output unusable (unparseable OR fails the document schema) AND exit != 0 | `unavailable` — crashed mid-review |
 | output unusable (unparseable OR fails the document schema) AND exit == 0 | `malformed` — ran fine, printed junk |
 | echoed `sha` != head | `stale` |
-| blocking findings present | `findings` |
-| otherwise | `clean` |
+| blocking findings present | `findings` — regardless of exit code |
+| no blocking findings AND exit != 0 | `unavailable` — the provider's own signals contradict each other |
+| no blocking findings AND exit == 0 | `clean` |
 
 The exit code is the provider's own verdict on whether it ran. rloop trusts
 that verdict over the shape of whatever it printed: a non-zero exit wins even
 when the printed JSON is well-formed but fails the schema, and `malformed` is
 reserved for the case where the provider claims success (`exit 0`) and the
 output still cannot be used — parsed or not.
+
+**A non-zero exit can never produce `clean`.** That single rule splits in two
+directions once the document has actually parsed: linters conventionally
+exit non-zero *because* they found something, so when the document also
+reports blocking findings, the exit code is redundant noise and the document
+wins — `findings`, trusting the document the same way `pr status` already
+does. But when the document reports nothing blocking despite a non-zero
+exit, the provider is telling two different stories about the same run —
+success in the document, failure in the exit code — and neither half gets to
+win by default. That is `unavailable`, with a detail explaining the
+contradiction, not a pass.
 
 Nothing on this list returns `clean` on a path where the review did not
 actually happen.
@@ -582,11 +594,11 @@ above.
 
 ### Deprecated: `merge.required_reviewers` / `merge.required_reviewer_state`
 
-These two keys still work — rloop 0.2.1 is published and configs in the wild
-set them. `loadConfig` desugars each login in `required_reviewers` into a
-`kind: forge` entry in `reviewers:`, using `required_reviewer_state` (default
-`approved`) as its `required_state`, and `rloop check` prints a warning
-pointing at the replacement. They will be removed in 1.0.
+These two keys still work — they shipped in a published release and configs
+in the wild set them. `loadConfig` desugars each login in `required_reviewers`
+into a `kind: forge` entry in `reviewers:`, using `required_reviewer_state`
+(default `approved`) as its `required_state`, and `rloop check` prints a
+warning pointing at the replacement. They will be removed in 1.0.
 
 Setting **both** forms — the deprecated keys and a non-empty `reviewers:` — is
 a config error, not a merge: two sources of truth for who must review a PR is
@@ -960,9 +972,11 @@ If not, add the branch.
 
 ### `pr merge` refuses with `reviewer_stale`
 
-The fix depends on which kind of reviewer went stale. The blocker message
-itself doesn't say — check the reviewer's line in `rloop pr status`, which
-prints `name (kind): status` for each configured reviewer.
+The fix depends on which kind of reviewer went stale, and the blocker message
+now says which action applies ("re-request review" for `kind: forge`,
+"re-run the reviewer" for `kind: command`). The reviewer's line in
+`rloop pr status`, which prints `name (kind): status`, confirms which kind you
+are looking at.
 
 - **`kind: forge`** — your reviewer approved (or commented on) an earlier
   commit and you have pushed since. Re-request the review on the current

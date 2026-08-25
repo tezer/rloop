@@ -30,6 +30,11 @@ export function readProviderJson(
     const out: string[] = [];
     const err: string[] = [];
     let timedOut = false;
+    // Node documents 'error' as firing before 'close' when a spawn fails,
+    // but that ordering is a runtime guarantee, not something this
+    // function's correctness should lean on silently — guard it directly so
+    // a second event is a no-op instead of a second resolve() call.
+    let settled = false;
 
     const child = spawn('bash', ['-c', command], {
       cwd: opts.cwd,
@@ -40,6 +45,11 @@ export function readProviderJson(
 
     child.stdout.on('data', (b: Buffer) => out.push(b.toString('utf8')));
     child.stderr.on('data', (b: Buffer) => err.push(b.toString('utf8')));
+    // Without these, an EPIPE (or any other stream error — e.g. racing the
+    // timeout's SIGKILL) is an unhandled 'error' event on a Readable, which
+    // crashes the whole rloop process instead of degrading one reviewer.
+    child.stdout.on('error', () => {});
+    child.stderr.on('error', () => {});
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -51,6 +61,8 @@ export function readProviderJson(
     }, opts.timeoutMs);
 
     const settle = (exitCode: number | null, spawnError: Error | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       resolve({
         stdout: out.join('').trim(),
@@ -62,6 +74,15 @@ export function readProviderJson(
     };
 
     child.on('error', (e) => settle(null, e));
-    child.on('close', (code) => settle(code, null));
+    // Resolve on 'exit' — the provider process itself terminating — rather
+    // than 'close'. 'close' does not fire until every inherited stdio fd is
+    // closed, including one held open by a grandchild the provider
+    // backgrounded without redirecting its own output (e.g. `sleep 100 &`
+    // with no `>/dev/null`). That grandchild keeps the pipe open, so 'close'
+    // never comes and a genuinely clean review is reported as `unavailable`
+    // once `timeoutMs` elapses. Whatever stdout/stderr has arrived by 'exit'
+    // is already captured above via the 'data' listeners, which fire as
+    // chunks arrive rather than only once the streams close.
+    child.on('exit', (code) => settle(code, null));
   });
 }

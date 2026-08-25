@@ -1,7 +1,7 @@
 import type { RloopConfig } from './config.js';
 import type { PullRequest, ReviewThread } from './forge/types.js';
 import type { Degradation } from './reviewers/collect.js';
-import { BLOCKING_SEVERITIES } from './reviewers/types.js';
+import { isBlocking } from './reviewers/types.js';
 import type { ReviewerReport } from './reviewers/types.js';
 import type { GateRunResult } from './types.js';
 
@@ -143,14 +143,22 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
           message: `No review from "${r.name}" at all. Absence of a verdict is NOT approval.`,
         });
         break;
-      case 'stale':
+      case 'stale': {
+        // The remedy differs by kind: a forge review can be re-requested; a
+        // command reviewer has no review to request, only a re-run. Branch
+        // it, as the README's troubleshooting section already does.
+        const advice =
+          r.kind === 'forge'
+            ? 're-request review on the current commit'
+            : 're-run the reviewer against the current commit';
         blockers.push({
           code: 'reviewer_stale',
           message:
             `Latest review from "${r.name}" is against ${short(r.sha ?? '')}, but PR head is ` +
-            `${short(pr.headSha)}. Stale — re-request review on the current commit.`,
+            `${short(pr.headSha)}. Stale — ${advice}.`,
         });
         break;
+      }
       case 'unavailable':
         blockers.push({
           code: 'reviewer_unavailable',
@@ -174,14 +182,12 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         // findings that were never blocking in the first place, which grows
         // the dismiss list src/reviewers/command.ts warns can pre-suppress
         // real findings.
-        const blocking = r.findings.filter(
-          (f) => !f.dismissed && BLOCKING_SEVERITIES.includes(f.severity),
-        );
+        const blocking = r.findings.filter((f) => !f.dismissed && isBlocking(f.severity));
         const sample = blocking.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
-        const findingsSummary =
-          `"${r.name}" has open findings${sample ? `: ${sample}` : ''}` +
-          (blocking.length > 3 ? ` (+${blocking.length - 3} more)` : '') +
-          (r.detail ? ` — ${r.detail}` : '');
+        const findingsList =
+          (sample ? `: ${sample}` : '') +
+          (blocking.length > 3 ? ` (+${blocking.length - 3} more)` : '');
+        const detailSuffix = r.detail ? ` — ${r.detail}` : '';
 
         // `status: findings` alone cannot tell an operator what to DO: a forge
         // reviewer that requested changes and one that merely commented under
@@ -189,20 +195,35 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         // fixed and the other needs an approval nobody has to actually
         // disagree to withhold. findingsReason carries that distinction back
         // out as its own code, each naming the action that clears it.
+        //
+        // The wording must branch on it too: forge reviewers ALWAYS carry
+        // `findings: []` — their findings live in review threads, not this
+        // array — so "has open findings" is simply false for them. Only the
+        // `provider_findings` case (a `kind: command` reviewer) actually has
+        // findings to list.
         if (r.findingsReason === 'changes_requested') {
           blockers.push({
             code: 'reviewer_changes_requested',
-            message: `${findingsSummary}. Address the requested changes and re-request review.`,
+            message:
+              `"${r.name}" requested changes${detailSuffix}. Address the requested changes ` +
+              `and re-request review.`,
           });
         } else if (r.findingsReason === 'not_approved') {
+          const reviewerCfg = cfg.reviewers.find((rv) => rv.name === r.name);
+          const requiredState = reviewerCfg?.kind === 'forge' ? reviewerCfg.required_state : null;
           blockers.push({
             code: 'reviewer_not_approved',
-            message: `${findingsSummary}. Obtain an APPROVED review before merging.`,
+            message:
+              `"${r.name}" reviewed without approving` +
+              (requiredState ? ` (required_state: "${requiredState}")` : '') +
+              `${detailSuffix}. Obtain an APPROVED review before merging.`,
           });
         } else {
           blockers.push({
             code: 'reviewer_findings_open',
-            message: `${findingsSummary}. Resolve or dismiss the findings before merging.`,
+            message:
+              `"${r.name}" has open findings${findingsList}${detailSuffix}. Resolve or dismiss ` +
+              `the findings before merging.`,
           });
         }
         break;

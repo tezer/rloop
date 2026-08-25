@@ -58,6 +58,26 @@ describe('readProviderJson', () => {
     expect(r.timedOut).toBe(true);
   }, 20_000);
 
+  it('resolves promptly on the provider exiting, not on a backgrounded grandchild closing its stdio', async () => {
+    // Regression guard: resolving on 'close' instead of 'exit' waits for
+    // EVERY inherited stdio fd to close, including one a grandchild the
+    // provider backgrounded (without redirecting output) is still holding.
+    // Measured before the fix: 'exit' at ~4ms, 'close' at ~3000ms — past
+    // most timeouts, a clean review would read as `unavailable`.
+    const start = Date.now();
+    const r = await run('backgrounds-without-redirect.mjs', 15_000);
+    const elapsed = Date.now() - start;
+
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).toBe(0);
+    // The document must still arrive intact — this isn't a truncation fix,
+    // it's a "don't wait for the wrong event" fix.
+    expect(JSON.parse(r.stdout)).toEqual({ sha: 'a'.repeat(40), findings: [] });
+    // The backgrounded `sleep` runs for 2s; resolving on 'exit' must not
+    // wait for it. Generous margin for a loaded CI box.
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
   it('passes the supplied env through to the provider', async () => {
     const r = await run('clean.mjs');
     expect(JSON.parse(r.stdout).sha).toBe('a'.repeat(40));

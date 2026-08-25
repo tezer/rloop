@@ -69,6 +69,13 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
     };
 
     child.on('error', (err) => settle(null, err));
-    child.on('close', (code) => settle(code, null));
+    // Resolve on 'exit', not 'close' — see src/reviewers/read-json.ts for the
+    // full rationale. 'close' waits for every inherited stdio fd to close,
+    // including one a gate command backgrounded without redirecting (`sleep
+    // 100 &` with no `>/dev/null`) still holds open; that grandchild would
+    // otherwise leave a gate that actually finished reported as `error` once
+    // `timeoutMs` elapses. Output already collected above via the 'data'
+    // listeners is what gets reported.
+    child.on('exit', (code) => settle(code, null));
   });
 }

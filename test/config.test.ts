@@ -171,6 +171,27 @@ merge:
     expect(cfg.reviewers.every((r) => r.kind === 'forge' && r.required_state === 'any_verdict')).toBe(true);
   });
 
+  it('desugars to the STRICTER "approved" when required_reviewer_state is omitted', () => {
+    // Reachable whenever `merge.required_reviewers` is set with
+    // `merge.enabled: false` — the superRefine that otherwise forces
+    // `required_reviewer_state` to be stated only fires when `merge.enabled`
+    // is true, so this shape parses cleanly and falls all the way through to
+    // `desugarDeprecatedReviewers`'s `?? 'approved'` fallback. Every other
+    // desugar test above sets `required_reviewer_state` explicitly, so none
+    // of them would catch a mutation of that fallback's default value.
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: false
+  required_reviewers: [copilot-pull-request-reviewer]
+`);
+    expect(cfg.reviewers).toHaveLength(1);
+    expect(cfg.reviewers[0]).toMatchObject({
+      kind: 'forge',
+      login: 'copilot-pull-request-reviewer',
+      required_state: 'approved',
+    });
+  });
+
   it('REFUSES a config that uses both forms', () => {
     // Two sources of truth for who must review is a config whose author does
     // not know what will happen. Never silently merged.
