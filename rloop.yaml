@@ -142,19 +142,20 @@ reviewers:
   #   timeout_seconds: 900
 
 merge:
-  # DRY RUN, deliberately, and this is the line to change if you disagree.
+  # ENABLED. The loop closes by itself when every condition below holds.
   #
-  # `main` is what npm publishes from — `prepublishOnly` builds and tests, but
-  # nothing stops a merge here from becoming a release. Auto-merging to a
-  # publish branch means auto-shipping, which is a different risk from
-  # auto-merging to a staging branch that a human promotes later.
+  # Know precisely what this does and does not authorise. It merges into
+  # `main`; it does NOT publish. `npm publish` needs a credential this tool
+  # does not have and cannot use, so shipping stays a deliberate human act.
+  # A merge here is revertable; a publish is not, and that asymmetry is the
+  # reason the two are separated rather than chained.
   #
-  # With this false, the loop still runs end to end and still reaches a real
-  # verdict: gates run, reviewers are collected, every merge condition is
-  # evaluated, and `rloop pr merge` refuses with `merge_disabled` rather than
-  # silently doing nothing. Flip to true when you want the loop to close by
-  # itself.
-  enabled: false
+  # What still stands between a generated PR and `main`: all three gates
+  # green ON THE HEAD COMMIT, a reviewer verdict bound to that same commit,
+  # and every review thread resolved. `pr merge` re-derives all of it rather
+  # than trusting a verdict computed moments earlier — a push between the
+  # check and the merge invalidates the check, and it will refuse.
+  enabled: true
 
   # ALLOWLIST, never a denylist — a branch nobody remembered to add stays
   # protected. Populated so that flipping `enabled` above is a one-line change
