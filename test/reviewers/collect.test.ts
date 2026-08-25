@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import type { ReviewVerdict } from '../../src/forge/types.js';
@@ -64,6 +66,47 @@ reviewers:
   it('leaves findings empty for a forge reviewer', async () => {
     expect((await collect(forgeCfg, [review()])).at(0)!.findings).toEqual([]);
   });
+
+  it('prefers stale over CHANGES_REQUESTED when the review is against another commit', async () => {
+    // Order dependence, and it is real: a rejection of a DIFFERENT commit is
+    // not a rejection of this one. Swapping the two checks leaves every other
+    // test green, so this is the only thing pinning it.
+    const r = await collect(forgeCfg, [review({ state: 'CHANGES_REQUESTED', sha: OLD })]);
+    expect(r.at(0)!.status).toBe('stale');
+  });
+});
+
+describe('collectReviewerReports — command dispatch', () => {
+  const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/reviewers');
+  const commandCfg = (script: string) =>
+    loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: node ${path.join(FIX, script)}
+`);
+
+  it('dispatches a command reviewer through the same entry point', async () => {
+    const r = await collectReviewerReports(commandCfg('clean.mjs'), {
+      repoRoot: process.cwd(), headSha: HEAD, reviews: [],
+    });
+    expect(r.at(0)!.kind).toBe('command');
+    expect(r.at(0)!.status).toBe('clean');
+  });
+
+  it('an unavailable command reviewer becomes degradation', async () => {
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: definitely-not-a-real-binary-xyz
+`);
+    const reports = await collectReviewerReports(cfg, {
+      repoRoot: process.cwd(), headSha: HEAD, reviews: [],
+    });
+    expect(reports.at(0)!.status).toBe('unavailable');
+    expect(degradationOf(reports, cfg)?.reason).toBe('unavailable');
+  });
 });
 
 describe('degradationOf', () => {
@@ -84,5 +127,17 @@ describe('degradationOf', () => {
     // degradation would report "no provider available" when one is configured
     // and simply has not answered yet.
     expect(degradationOf(await collect(), forgeCfg)).toBeNull();
+  });
+
+  it('not_configured wins over an unavailable report', async () => {
+    // This combination cannot arise from collectReviewerReports, which derives
+    // reports FROM cfg.reviewers. Pinned anyway: the precedence is deliberate,
+    // and an unpinned deliberate choice is indistinguishable from an accident.
+    const cfg = loadConfig(base);
+    const d = degradationOf(
+      [{ name: 'x', kind: 'command', status: 'unavailable', sha: null, findings: [], detail: 'ENOENT' }],
+      cfg,
+    );
+    expect(d?.reason).toBe('not_configured');
   });
 });
