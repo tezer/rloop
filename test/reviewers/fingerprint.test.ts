@@ -39,7 +39,20 @@ describe('fingerprint', () => {
     );
   });
 
-  it('does not confuse an id with a path+title that happens to look like one', () => {
-    expect(fingerprint({ id: 'x', title: 'y' })).not.toBe(fingerprint({ path: 'x', title: 'y' }));
+  it('does not confuse an id with a path+title that concatenate to the same string', () => {
+    // Without the `id`/`pt` domain tags these collide exactly: the id branch
+    // yields "src/a.tsx" and the pt branch yields "src/a.ts" + "x". Verified —
+    // both hash to 633790c1 with the tags removed.
+    expect(fingerprint({ id: 'src/a.tsx', title: 'anything' })).not.toBe(
+      fingerprint({ path: 'src/a.ts', title: 'x' }),
+    );
+  });
+
+  it('does not confuse a path/title boundary that shifts', () => {
+    // The separator BETWEEN path and title is load-bearing too: without it
+    // "a"+"bc" and "ab"+"c" are the same string.
+    expect(fingerprint({ path: 'a', title: 'bc' })).not.toBe(
+      fingerprint({ path: 'ab', title: 'c' }),
+    );
   });
 });
