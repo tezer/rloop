@@ -67,6 +67,25 @@ reviewers:
     expect(r.findingsReason).toBe('changes_requested');
   });
 
+  it('CHANGES_REQUESTED wins over not_approved under required_state: approved', async () => {
+    // The branch order in forgeReport decides the code here: CHANGES_REQUESTED
+    // must be checked before the required_state:approved/not-APPROVED check,
+    // because a reviewer that actively rejected the commit is a stronger
+    // statement than one that simply never approved it. Swapping the two
+    // branches makes this report land on 'not_approved' instead — see the
+    // mutation check in the final-fix report for this task.
+    const approvedCfg = loadConfig(`${base}
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: approved
+`);
+    const r = (await collect(approvedCfg, [review({ state: 'CHANGES_REQUESTED' })])).at(0)!;
+    expect(r.status).toBe('findings');
+    expect(r.findingsReason).toBe('changes_requested');
+  });
+
   it('reports stale when the latest review is against another sha', async () => {
     expect((await collect(forgeCfg, [review({ sha: OLD })])).at(0)!.status).toBe('stale');
   });

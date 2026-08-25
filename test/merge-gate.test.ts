@@ -4,7 +4,7 @@ import { loadConfig, type RloopConfig } from '../src/config.js';
 import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from '../src/forge/types.js';
 import { evaluateMergeGate, type BlockerCode } from '../src/merge-gate.js';
 import { collectReviewerReports, degradationOf } from '../src/reviewers/collect.js';
-import type { ReviewerReport } from '../src/reviewers/types.js';
+import type { Finding, ReviewerReport, ReviewerStatus } from '../src/reviewers/types.js';
 import type { GateRunResult } from '../src/types.js';
 
 const HEAD = 'a'.repeat(40);
@@ -419,6 +419,18 @@ merge:
   });
 });
 
+const finding = (over: Partial<Finding> = {}): Finding => ({
+  id: null,
+  severity: 'minor',
+  path: 'src/a.ts',
+  line: null,
+  title: 'a finding',
+  body: null,
+  fingerprint: '00000000',
+  dismissed: false,
+  ...over,
+});
+
 const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => ({
   name: 'copilot',
   kind: 'forge',
@@ -553,5 +565,73 @@ merge:
     });
     expect(d.blockers.map((b) => b.code)).toContain('reviewer_degraded');
     expect(d.allowed).toBe(false);
+  });
+
+  it('samples only blocking findings, not minors that never blocked', () => {
+    // Four minors and one important: a sample drawn from "not dismissed"
+    // alone names three minors and buries the only real blocker under
+    // "(+2 more)". The sample must be drawn from BLOCKING_SEVERITIES.
+    const minors = ['first minor', 'second minor', 'third minor', 'fourth minor'].map((title, i) =>
+      finding({ severity: 'minor', title, fingerprint: `min0000${i}` }),
+    );
+    const important = finding({
+      severity: 'important',
+      title: 'the actual blocker',
+      fingerprint: 'aabbccdd',
+    });
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [
+        report({
+          kind: 'command',
+          status: 'findings',
+          findingsReason: 'provider_findings',
+          findings: [...minors, important],
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    const blocker = d.blockers.find((b) => b.code === 'reviewer_findings_open');
+    expect(blocker?.message).toContain('the actual blocker');
+    for (const m of minors) {
+      expect(blocker?.message).not.toContain(m.title);
+    }
+  });
+
+  it('fails closed on a status the switch does not recognize', () => {
+    // A seventh ReviewerStatus, arriving via a cast (or parsed JSON) rather
+    // than a literal the compiler would catch. The fall-through direction
+    // for something evaluateMergeGate does not understand must be "block".
+    const unknown = report({ status: 'mystery-status' as unknown as ReviewerStatus });
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [unknown],
+      degradation: null,
+      threads: [],
+    });
+    expect(d.allowed).toBe(false);
+    expect(d.blockers.map((b) => b.code)).toContain('reviewer_degraded');
+  });
+
+  it('blocks when called directly with an empty reviewerReports array and no degradation', () => {
+    // evaluateMergeGate is exported from src/index.ts. A caller that skips
+    // degradationOf (or gets it wrong) and passes an empty reviewerReports
+    // array must not get `allowed: true` — an empty reviewer list is a
+    // missing signal exactly like a not-configured reviewer stream is.
+    const d = evaluateMergeGate({
+      cfg: cfg(),
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [],
+      degradation: null,
+      threads: [],
+    });
+    expect(d.allowed).toBe(false);
+    expect(d.blockers.map((b) => b.code)).toContain('reviewer_degraded');
   });
 });

@@ -1,6 +1,7 @@
 import type { RloopConfig } from './config.js';
 import type { PullRequest, ReviewThread } from './forge/types.js';
 import type { Degradation } from './reviewers/collect.js';
+import { BLOCKING_SEVERITIES } from './reviewers/types.js';
 import type { ReviewerReport } from './reviewers/types.js';
 import type { GateRunResult } from './types.js';
 
@@ -115,6 +116,21 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         `External review is degraded (${input.degradation.reason}): ` +
         `${input.degradation.message} Gates still ran; the merge does not.`,
     });
+  } else if (input.reviewerReports.length === 0) {
+    // Defends this function's own public contract, independent of any
+    // caller. `degradationOf` normally catches "no reviewers configured" and
+    // sets `degradation`, but `evaluateMergeGate` is exported from
+    // src/index.ts and can be called directly with an empty reviewerReports
+    // array and no degradation computed at all. An empty reviewer list is a
+    // missing signal exactly like `degradationOf` says it is — it must block
+    // here too, not just when the one caller that remembers to call
+    // `degradationOf` first happens to be the one invoking this.
+    blockers.push({
+      code: 'reviewer_degraded',
+      message:
+        'No reviewer reports were supplied and no degradation was reported: there is no ' +
+        'external review stream. A missing signal is a blocker, never a pass.',
+    });
   }
 
   for (const r of input.reviewerReports) {
@@ -150,11 +166,21 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         });
         break;
       case 'findings': {
-        const open = r.findings.filter((f) => !f.dismissed);
-        const sample = open.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
+        // Sample only the findings that actually block. `open` (not dismissed)
+        // is not the same set as "blocking" — a report can carry minor
+        // findings alongside the one that matters, and a sample drawn from
+        // `open` can bury the actual blocker under "(+N more)" while naming
+        // only the minors. It also steers the operator toward dismissing
+        // findings that were never blocking in the first place, which grows
+        // the dismiss list src/reviewers/command.ts warns can pre-suppress
+        // real findings.
+        const blocking = r.findings.filter(
+          (f) => !f.dismissed && BLOCKING_SEVERITIES.includes(f.severity),
+        );
+        const sample = blocking.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
         const findingsSummary =
           `"${r.name}" has open findings${sample ? `: ${sample}` : ''}` +
-          (open.length > 3 ? ` (+${open.length - 3} more)` : '') +
+          (blocking.length > 3 ? ` (+${blocking.length - 3} more)` : '') +
           (r.detail ? ` — ${r.detail}` : '');
 
         // `status: findings` alone cannot tell an operator what to DO: a forge
@@ -180,6 +206,26 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
           });
         }
         break;
+      }
+      default: {
+        // Fails closed, on two levels. First, at compile time: if a seventh
+        // ReviewerStatus is ever added and this switch is not updated for it,
+        // `r.status` here is no longer assignable to `never` and the build
+        // breaks — the fall-through direction for an unhandled status must be
+        // "block", never "permit" by omission, for a tool whose entire job is
+        // refusing unsafe merges. Second, at runtime: the type system's
+        // guarantee doesn't survive a cast (`as unknown as ReviewerStatus`) or
+        // a value arriving from parsed JSON, so an unrecognized status still
+        // has to produce a blocker rather than silently falling out of the
+        // switch with nothing pushed. rloop not understanding its own report
+        // IS a degraded review signal.
+        const _exhaustive: never = r.status;
+        blockers.push({
+          code: 'reviewer_degraded',
+          message:
+            `Reviewer "${r.name}" reported an unrecognized status (${String(_exhaustive)}). ` +
+            `rloop cannot evaluate this report, which is itself a degraded review signal.`,
+        });
       }
     }
   }

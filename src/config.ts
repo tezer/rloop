@@ -117,9 +117,10 @@ const mergeSchema = z
     /**
      * DEPRECATED — use `reviewers:`'s per-entry `required_state` instead.
      * `loadConfig` desugars this into that field (see
-     * `desugarDeprecatedReviewers`) for configs written against `reviewers:`,
-     * but it is not yet vestigial: until every reader of this config is
-     * migrated to `reviewers:`, this field is read directly too.
+     * `desugarDeprecatedReviewers`) for configs written against `reviewers:`.
+     * Every reader in this codebase now goes through `reviewers:`; this field
+     * is kept only for parsing and desugaring configs still written against
+     * the deprecated keys.
      *
      * Original intent, preserved as the reasoning behind the two states
      * `reviewers:` entries now carry: this exists because "a review exists"
@@ -282,9 +283,9 @@ export const configSchema = z
     /**
      * External reviewers, forge-native or a local command. Populated after
      * `loadConfig` even when the config only sets the deprecated
-     * `merge.required_reviewers` — see `desugarDeprecatedReviewers`. New code
-     * should read this field rather than `merge.required_reviewers` directly;
-     * not every existing reader has caught up yet.
+     * `merge.required_reviewers` — see `desugarDeprecatedReviewers`. All code
+     * in this codebase reads this field; `merge.required_reviewers` /
+     * `merge.required_reviewer_state` are parsed only to be desugared into it.
      */
     reviewers: z.array(reviewerSchema).default([]),
 
@@ -381,9 +382,9 @@ export function collectWarnings(cfg: RloopConfig): ConfigWarning[] {
   if (cfg.merge.enabled && cfg.reviewers.length === 0) {
     warnings.push({
       message:
-        'merge.enabled is true with no reviewers configured: local gates are the only ' +
-        'thing standing between a generated PR and the base branch, and nothing here ' +
-        'blocks the merge on their absence.',
+        'merge.enabled is true with no reviewers configured: there is no external review ' +
+        'stream, which evaluateMergeGate treats as a degraded review signal. The config is ' +
+        'valid, but rloop will refuse to merge until at least one reviewer is configured.',
     });
   }
 

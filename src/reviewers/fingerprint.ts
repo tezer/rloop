@@ -16,8 +16,12 @@ export function fingerprint(input: {
   path?: string | null;
   title: string;
 }): string {
-  // The domain tag keeps the two bases in separate spaces, so an id of "x"
-  // cannot collide with a path of "x".
+  // The domain tag keeps the two bases in separate spaces. Without it, the
+  // real hazard isn't "an id can equal a path" -- those differ by construction
+  // anyway. It's an id that CONTAINS the NUL separator used below: with the
+  // tag removed, an id of 'src/a.ts' + NUL + 'x' (String.fromCharCode(0))
+  // would concatenate to the same string as { path: 'src/a.ts', title: 'x' }
+  // and hash identically.
   const basis = input.id
     ? `id\u0000${input.id}`
     : `pt\u0000${input.path ?? ''}\u0000${normalizeTitle(input.title)}`;
