@@ -97,22 +97,35 @@ const mergeSchema = z
     require_threads_resolved: z.boolean().default(true),
 
     /**
-     * External reviewer logins whose verdict must be present and clean, bound
-     * to the same head SHA (e.g. `copilot-pull-request-reviewer`). A missing
-     * verdict is NEVER treated as clean.
+     * DEPRECATED — use `reviewers:` (a `kind: forge` entry per login) instead.
+     * This is no longer the mechanism: `loadConfig` desugars each login here
+     * into a `reviewers:` entry (see `desugarDeprecatedReviewers`) and every
+     * consumer reads `cfg.reviewers`, never this field. Kept working, not
+     * because it is current, but because rloop 0.2.1 is published and configs
+     * in the wild set it — see `collectWarnings` for the nag.
+     *
+     * Original intent, preserved because it still describes what the desugared
+     * `reviewers:` entry does: external reviewer logins whose verdict must be
+     * present and clean, bound to the same head SHA (e.g.
+     * `copilot-pull-request-reviewer`). A missing verdict is NEVER treated as
+     * clean.
      */
     required_reviewers: z.array(z.string().min(1)).default([]),
 
     /**
-     * What a required reviewer must actually have SAID.
+     * DEPRECATED — use `reviewers:`'s per-entry `required_state` instead. Like
+     * `required_reviewers` above, this desugars rather than doing anything
+     * itself; see `desugarDeprecatedReviewers`.
      *
-     * This exists because "a review exists" and "the reviewer approved" are
-     * different facts, and conflating them was a real hole. GitHub review
-     * states are APPROVED, CHANGES_REQUESTED and COMMENTED — and a bot that
-     * files findings as inline comments submits COMMENTED whether it found
-     * nothing or found ten things. GitHub Copilot never submits APPROVED at
-     * all. So a gate that blocks only on CHANGES_REQUESTED is really checking
-     * "did the reviewer turn up", which is a weaker claim than it reads as.
+     * Original intent, preserved as the reasoning behind the two states
+     * `reviewers:` entries now carry: this exists because "a review exists"
+     * and "the reviewer approved" are different facts, and conflating them
+     * was a real hole. GitHub review states are APPROVED, CHANGES_REQUESTED
+     * and COMMENTED — and a bot that files findings as inline comments
+     * submits COMMENTED whether it found nothing or found ten things. GitHub
+     * Copilot never submits APPROVED at all. So a gate that blocks only on
+     * CHANGES_REQUESTED is really checking "did the reviewer turn up", which
+     * is a weaker claim than it reads as.
      *
      * - `approved` — only APPROVED clears the gate. Correct for humans and any
      *   reviewer that actually approves. Makes a comment-only bot permanently
@@ -124,9 +137,10 @@ const mergeSchema = z
      *   performed by the same agent being gated, so this setting delegates the
      *   real check to a party with an interest in the answer.
      *
-     * No default, deliberately. With `merge.enabled` the choice decides what
-     * "the reviewer was happy" means, and inheriting that silently is the
-     * mistake this field was added to prevent.
+     * No default, deliberately, for the same reason `reviewers:`'s forge entry
+     * requires `required_state` rather than defaulting it: with `merge.enabled`
+     * the choice decides what "the reviewer was happy" means, and inheriting
+     * that silently is the mistake this field was added to prevent.
      */
     required_reviewer_state: z.enum(['approved', 'any_verdict']).optional(),
 
@@ -161,6 +175,26 @@ const mergeSchema = z
           'review that raised findings.',
       });
     }
+
+    // Mirrors the duplicate-name check on `reviewers:` in configSchema.
+    // Required here too, separately: desugaring turns each login into a
+    // `reviewers:` entry named after itself AFTER this schema's own
+    // validation has already run, so a repeat here would otherwise reach
+    // `cfg.reviewers` as a silent duplicate name that the top-level check
+    // never sees (it only inspects the new block, which is empty when the
+    // deprecated keys are what's in use).
+    const seenLogins = new Set<string>();
+    for (const login of merge.required_reviewers) {
+      if (seenLogins.has(login)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `duplicate login "${login}" in merge.required_reviewers — after desugaring ` +
+            'this becomes a duplicate reviewer name, which the report keys on.',
+        });
+      }
+      seenLogins.add(login);
+    }
   });
 
 const forgeSchema = z
@@ -172,6 +206,45 @@ const forgeSchema = z
       .regex(/^[^/\s]+\/[^/\s]+$/, 'slug must be "owner/name"'),
   })
   .strict();
+
+const dismissalSchema = z
+  .object({
+    /** 8 hex characters, as printed next to the finding in rloop's report. */
+    fingerprint: z.string().regex(/^[0-9a-f]{8}$/, 'fingerprint must be 8 lowercase hex chars'),
+    /**
+     * Required. A dismissal without a stated reason is indistinguishable from
+     * a finding somebody silenced because it was inconvenient.
+     */
+    reason: z.string().min(1),
+  })
+  .strict();
+
+const forgeReviewerSchema = z
+  .object({
+    name: z.string().min(1),
+    kind: z.literal('forge'),
+    /** Login, not display name. See README for the Copilot form. */
+    login: z.string().min(1),
+    /**
+     * Per-reviewer, because it always was: a comment-only bot needs
+     * `any_verdict` and a human needs `approved`, and one global setting
+     * cannot express both.
+     */
+    required_state: z.enum(['approved', 'any_verdict']),
+  })
+  .strict();
+
+const commandReviewerSchema = z
+  .object({
+    name: z.string().min(1),
+    kind: z.literal('command'),
+    run: z.string().min(1),
+    timeout_seconds: z.number().int().positive().max(3600).default(600),
+    dismiss: z.array(dismissalSchema).default([]),
+  })
+  .strict();
+
+const reviewerSchema = z.discriminatedUnion('kind', [forgeReviewerSchema, commandReviewerSchema]);
 
 /** A cheap environment check that must pass before any gate is attempted. */
 const preflightSchema = z
@@ -203,6 +276,14 @@ export const configSchema = z
     merge: mergeSchema.default({}),
 
     /**
+     * External reviewers, forge-native or a local command. Populated after
+     * `loadConfig` even when the config only sets the deprecated
+     * `merge.required_reviewers` — see `desugarDeprecatedReviewers`. Consumers
+     * should read this field and never `merge.required_reviewers` directly.
+     */
+    reviewers: z.array(reviewerSchema).default([]),
+
+    /**
      * Gates run sequentially by default and you should keep it that way:
      * concurrent runs sharing a container runtime, a port, or a test database
      * produce spurious greens. Opt in only when every gate is provably
@@ -224,6 +305,30 @@ export const configSchema = z
         });
       }
       seen.add(gate.name);
+    }
+
+    const usesDeprecated =
+      cfg.merge.required_reviewers.length > 0 || cfg.merge.required_reviewer_state !== undefined;
+
+    if (cfg.reviewers.length > 0 && usesDeprecated) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'both `reviewers:` and the deprecated `merge.required_reviewers` / ' +
+          '`merge.required_reviewer_state` are set. Pick one — merging them silently ' +
+          'would give two sources of truth for who must review this PR.',
+      });
+    }
+
+    const names = new Set<string>();
+    for (const r of cfg.reviewers) {
+      if (names.has(r.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate reviewer name "${r.name}" — names must be unique (they key the report)`,
+        });
+      }
+      names.add(r.name);
     }
   });
 
@@ -259,11 +364,21 @@ export function collectWarnings(cfg: RloopConfig): ConfigWarning[] {
     });
   }
 
-  if (cfg.merge.enabled && cfg.merge.required_reviewers.length === 0) {
+  if (cfg.merge.required_reviewers.length > 0) {
     warnings.push({
       message:
-        'merge.enabled is true with no required_reviewers: local gates are the only ' +
-        'thing standing between a generated PR and the base branch.',
+        'merge.required_reviewers / merge.required_reviewer_state are DEPRECATED and will ' +
+        'be removed in 1.0. They now desugar into `reviewers:` entries. Move to the ' +
+        '`reviewers:` block, which also accepts `kind: command` local providers.',
+    });
+  }
+
+  if (cfg.merge.enabled && cfg.reviewers.length === 0) {
+    warnings.push({
+      message:
+        'merge.enabled is true with no reviewers configured: local gates are the only ' +
+        'thing standing between a generated PR and the base branch. rloop will refuse ' +
+        'to merge (reviewer_degraded) rather than proceed on gates alone.',
     });
   }
 
@@ -286,5 +401,32 @@ export function loadConfig(yamlText: string, sourcePath = '<config>'): RloopConf
       .join('\n');
     throw new Error(`${sourcePath}: invalid config\n${detail}`);
   }
-  return parsed.data;
+  return desugarDeprecatedReviewers(parsed.data);
+}
+
+/**
+ * Turn `merge.required_reviewers` into `reviewers:` entries.
+ *
+ * Runs after validation, so every consumer sees one shape and nothing below
+ * this line reads the deprecated keys. They stay on the config object because
+ * `collectWarnings` reports them and removing them would be the breaking
+ * change this function exists to avoid — rloop 0.2.1 is published, and configs
+ * in the wild use them.
+ */
+function desugarDeprecatedReviewers(cfg: RloopConfig): RloopConfig {
+  if (cfg.reviewers.length > 0 || cfg.merge.required_reviewers.length === 0) return cfg;
+
+  // superRefine on mergeSchema already requires required_reviewer_state when
+  // merge is enabled with reviewers; `approved` is the safe read otherwise.
+  const required_state = cfg.merge.required_reviewer_state ?? 'approved';
+
+  return {
+    ...cfg,
+    reviewers: cfg.merge.required_reviewers.map((login) => ({
+      name: login,
+      kind: 'forge' as const,
+      login,
+      required_state,
+    })),
+  };
 }

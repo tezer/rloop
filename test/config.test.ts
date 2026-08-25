@@ -117,3 +117,140 @@ gates:
     expect(collectWarnings(loadConfig(minimal))).toEqual([]);
   });
 });
+
+const base = `
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^ok$"]
+`;
+
+describe('reviewers', () => {
+  it('accepts a forge and a command reviewer side by side', () => {
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+  - name: codex
+    kind: command
+    run: codex review --json
+`);
+    expect(cfg.reviewers.map((r) => r.kind)).toEqual(['forge', 'command']);
+  });
+
+  it('desugars the deprecated merge keys into a forge reviewer', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+`);
+    expect(cfg.reviewers).toHaveLength(1);
+    expect(cfg.reviewers[0]).toMatchObject({
+      kind: 'forge',
+      login: 'copilot-pull-request-reviewer',
+      required_state: 'any_verdict',
+    });
+  });
+
+  it('desugars multiple deprecated required_reviewers into one forge reviewer each', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [alice, bob]
+  required_reviewer_state: any_verdict
+`);
+    expect(cfg.reviewers).toHaveLength(2);
+    expect(cfg.reviewers.every((r) => r.kind === 'forge')).toBe(true);
+    expect(cfg.reviewers.map((r) => (r.kind === 'forge' ? r.login : undefined))).toEqual(['alice', 'bob']);
+    expect(cfg.reviewers.every((r) => r.kind === 'forge' && r.required_state === 'any_verdict')).toBe(true);
+  });
+
+  it('REFUSES a config that uses both forms', () => {
+    // Two sources of truth for who must review is a config whose author does
+    // not know what will happen. Never silently merged.
+    expect(() =>
+      loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+merge:
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+`),
+    ).toThrow(/both/i);
+  });
+
+  it('rejects required_state on a command reviewer', () => {
+    expect(() =>
+      loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+    required_state: approved
+`),
+    ).toThrow();
+  });
+
+  it('rejects a dismissal with no reason', () => {
+    expect(() =>
+      loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+    dismiss:
+      - fingerprint: a1b2c3d4
+`),
+    ).toThrow();
+  });
+
+  it('rejects duplicate reviewer names, which key the report output', () => {
+    expect(() =>
+      loadConfig(`${base}
+reviewers:
+  - name: dup
+    kind: command
+    run: a
+  - name: dup
+    kind: command
+    run: b
+`),
+    ).toThrow(/duplicate/i);
+  });
+
+  it('rejects duplicate logins in the deprecated required_reviewers, which would ' +
+    'desugar into a duplicate reviewer name undetected by the reviewers: check above', () => {
+    // The reviewers:-duplicate check above runs on the new block, which is
+    // empty when only the deprecated keys are set — so this needs its own
+    // guard or a repeated login sails through desugaring as a silent
+    // duplicate name.
+    expect(() =>
+      loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer, copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+`),
+    ).toThrow(/duplicate/i);
+  });
+
+  it('warns that the deprecated keys are deprecated', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+`);
+    expect(collectWarnings(cfg).some((w) => /deprecated/i.test(w.message))).toBe(true);
+  });
+});
