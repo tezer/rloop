@@ -50,7 +50,21 @@ reviewers:
     login: copilot-pull-request-reviewer
     required_state: approved
 `);
-    expect((await collect(cfg, [review()])).at(0)!.status).toBe('findings');
+    const r = (await collect(cfg, [review()])).at(0)!;
+    expect(r.status).toBe('findings');
+    // Distinct from a rejection: nobody said no, nobody has said yes either.
+    expect(r.findingsReason).toBe('not_approved');
+  });
+
+  it('reports findings with reason changes_requested for a CHANGES_REQUESTED review', async () => {
+    // The other path into `findings`: a reviewer that actively rejected the
+    // code, as opposed to one that merely never approved it. No pre-existing
+    // test in this file reached `findings` via CHANGES_REQUESTED at the
+    // current head — both prior CHANGES_REQUESTED cases here end up `clean`
+    // (outvoted by a later APPROVED) or `stale`.
+    const r = (await collect(forgeCfg, [review({ state: 'CHANGES_REQUESTED' })])).at(0)!;
+    expect(r.status).toBe('findings');
+    expect(r.findingsReason).toBe('changes_requested');
   });
 
   it('reports stale when the latest review is against another sha', async () => {
@@ -175,7 +189,17 @@ describe('degradationOf', () => {
     // and an unpinned deliberate choice is indistinguishable from an accident.
     const cfg = loadConfig(base);
     const d = degradationOf(
-      [{ name: 'x', kind: 'command', status: 'unavailable', sha: null, findings: [], detail: 'ENOENT' }],
+      [
+        {
+          name: 'x',
+          kind: 'command',
+          status: 'unavailable',
+          sha: null,
+          findings: [],
+          detail: 'ENOENT',
+          findingsReason: null,
+        },
+      ],
       cfg,
     );
     expect(d?.reason).toBe('not_configured');

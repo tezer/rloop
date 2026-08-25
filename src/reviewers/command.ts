@@ -31,7 +31,7 @@ export async function runCommandReviewer(
   rev: CommandReviewer,
   opts: { repoRoot: string; headSha: string },
 ): Promise<ReviewerReport> {
-  const base = { name: rev.name, kind: 'command' as const, sha: null, findings: [] };
+  const base = { name: rev.name, kind: 'command' as const, sha: null, findings: [], findingsReason: null };
 
   const run = await readProviderJson(rev.run, {
     cwd: opts.repoRoot,
@@ -105,5 +105,6 @@ export async function runCommandReviewer(
     sha: parsed.doc.sha,
     findings,
     detail,
+    findingsReason: blocking.length > 0 ? 'provider_findings' : null,
   };
 }

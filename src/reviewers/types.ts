@@ -11,6 +11,20 @@ export type Severity = 'critical' | 'important' | 'minor';
  */
 export const BLOCKING_SEVERITIES: readonly Severity[] = ['critical', 'important'];
 
+/**
+ * WHY a reviewer is unhappy, when `status` is `findings`.
+ *
+ * `status` alone cannot carry this: a forge reviewer that requested changes
+ * and one that merely commented under `required_state: approved` are both
+ * "findings", but they ask the author for different things — fix the
+ * findings, versus obtain an approval. Collapsing them loses the difference
+ * exactly where an automated loop needs it.
+ */
+export type FindingsReason =
+  | 'changes_requested'
+  | 'not_approved'
+  | 'provider_findings';
+
 export interface Finding {
   /** Provider-supplied stable id, when it has one. */
   id: string | null;
@@ -48,4 +62,6 @@ export interface ReviewerReport {
   findings: Finding[];
   /** Why, for unavailable/malformed/stale. Null when there is nothing to say. */
   detail: string | null;
+  /** Set exactly when `status` is `findings`; null otherwise. */
+  findingsReason: FindingsReason | null;
 }

@@ -42,7 +42,7 @@ function forgeReport(
   rev: Extract<RloopConfig['reviewers'][number], { kind: 'forge' }>,
   opts: { headSha: string; reviews: ReviewVerdict[] },
 ): ReviewerReport {
-  const base = { name: rev.name, kind: 'forge' as const, findings: [] };
+  const base = { name: rev.name, kind: 'forge' as const, findings: [], findingsReason: null };
   const theirs = opts.reviews.filter((r) => matchesReviewer(rev.login, r.author));
 
   if (theirs.length === 0) {
@@ -69,7 +69,13 @@ function forgeReport(
   // gated by merge.require_threads_resolved. Two mechanisms for one fact is
   // how they drift apart.
   if (latest.state === 'CHANGES_REQUESTED') {
-    return { ...base, status: 'findings', sha: latest.sha, detail: 'changes requested' };
+    return {
+      ...base,
+      status: 'findings',
+      sha: latest.sha,
+      detail: 'changes requested',
+      findingsReason: 'changes_requested',
+    };
   }
   if (rev.required_state === 'approved' && latest.state !== 'APPROVED') {
     return {
@@ -77,6 +83,7 @@ function forgeReport(
       status: 'findings',
       sha: latest.sha,
       detail: `left a ${latest.state} review, and required_state is "approved"`,
+      findingsReason: 'not_approved',
     };
   }
   return { ...base, status: 'clean', sha: latest.sha, detail: null };

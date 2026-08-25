@@ -175,10 +175,7 @@ gates:
       degradation,
       threads: [],
     });
-    // CHANGES_REQUESTED collapses into the reviewer's open-findings status —
-    // there is no separate "changes requested" code any more (see
-    // src/reviewers/collect.ts's forgeReport).
-    expect(codes(d)).toContain('reviewer_findings_open');
+    expect(codes(d)).toContain('reviewer_changes_requested');
   });
 
   it('matches a reviewer across GitHub’s three login spellings', async () => {
@@ -351,10 +348,10 @@ merge:
       threads: [],
     });
     expect(d.allowed).toBe(false);
-    // "not approved" and "changes requested" both collapse into the
-    // reviewer's open-findings status now — see forgeReport in
-    // src/reviewers/collect.ts.
-    expect(codes(d)).toContain('reviewer_findings_open');
+    // A COMMENTED review under required_state: approved is "nobody has said
+    // yes yet", not "somebody said no" — its own code, distinct from
+    // reviewer_changes_requested.
+    expect(codes(d)).toContain('reviewer_not_approved');
   });
 
   it('under `approved`, an APPROVED review clears it', async () => {
@@ -399,9 +396,10 @@ merge:
       threads: [],
     });
     const blockerCodes = d.blockers.map((b) => b.code);
-    expect(blockerCodes).toContain('reviewer_findings_open');
-    // One cause, one blocker — not double-reported.
-    expect(blockerCodes.filter((code) => code === 'reviewer_findings_open')).toHaveLength(1);
+    expect(blockerCodes).toContain('reviewer_changes_requested');
+    // Not double-reported as "not approved" — one cause, one blocker.
+    expect(blockerCodes).not.toContain('reviewer_not_approved');
+    expect(blockerCodes).not.toContain('reviewer_findings_open');
   });
 
   it('is REQUIRED when merge is enabled with reviewers — no silent default', () => {
@@ -428,6 +426,7 @@ const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => ({
   sha: HEAD,
   findings: [],
   detail: null,
+  findingsReason: null,
   ...over,
 });
 
@@ -473,6 +472,37 @@ describe('reviewer reports', () => {
 
   it('blocks open findings', () => {
     expect(blockerCodes({ reviewerReports: [report({ status: 'findings' })] })).toContain('reviewer_findings_open');
+  });
+
+  it('blocks a CHANGES_REQUESTED forge reviewer with its own code', () => {
+    const c = blockerCodes({
+      reviewerReports: [report({ status: 'findings', findingsReason: 'changes_requested' })],
+    });
+    expect(c).toContain('reviewer_changes_requested');
+    expect(c).not.toContain('reviewer_findings_open');
+  });
+
+  it('blocks a not-yet-approved forge reviewer with its own code, distinct from a rejection', () => {
+    const c = blockerCodes({
+      reviewerReports: [report({ status: 'findings', findingsReason: 'not_approved' })],
+    });
+    expect(c).toContain('reviewer_not_approved');
+    expect(c).not.toContain('reviewer_changes_requested');
+    expect(c).not.toContain('reviewer_findings_open');
+  });
+
+  it('blocks a command reviewer with provider-reported findings under the generic code', () => {
+    // Neither "changes requested" nor "not approved" makes sense for a local
+    // command provider — those are forge review-state concepts. Its findings
+    // are its own, so it falls back to the generic code.
+    const c = blockerCodes({
+      reviewerReports: [
+        report({ kind: 'command', status: 'findings', findingsReason: 'provider_findings' }),
+      ],
+    });
+    expect(c).toContain('reviewer_findings_open');
+    expect(c).not.toContain('reviewer_changes_requested');
+    expect(c).not.toContain('reviewer_not_approved');
   });
 
   it('blocks a stale reviewer', () => {

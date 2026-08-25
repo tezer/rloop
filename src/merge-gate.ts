@@ -17,6 +17,8 @@ export type BlockerCode =
   | 'reviewer_unavailable'
   | 'reviewer_malformed'
   | 'reviewer_findings_open'
+  | 'reviewer_changes_requested'
+  | 'reviewer_not_approved'
   | 'threads_unresolved';
 
 export interface Blocker {
@@ -150,13 +152,33 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
       case 'findings': {
         const open = r.findings.filter((f) => !f.dismissed);
         const sample = open.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
-        blockers.push({
-          code: 'reviewer_findings_open',
-          message:
-            `"${r.name}" has open findings${sample ? `: ${sample}` : ''}` +
-            (open.length > 3 ? ` (+${open.length - 3} more)` : '') +
-            (r.detail ? ` — ${r.detail}` : ''),
-        });
+        const findingsSummary =
+          `"${r.name}" has open findings${sample ? `: ${sample}` : ''}` +
+          (open.length > 3 ? ` (+${open.length - 3} more)` : '') +
+          (r.detail ? ` — ${r.detail}` : '');
+
+        // `status: findings` alone cannot tell an operator what to DO: a forge
+        // reviewer that requested changes and one that merely commented under
+        // required_state: approved both land here, but one needs the findings
+        // fixed and the other needs an approval nobody has to actually
+        // disagree to withhold. findingsReason carries that distinction back
+        // out as its own code, each naming the action that clears it.
+        if (r.findingsReason === 'changes_requested') {
+          blockers.push({
+            code: 'reviewer_changes_requested',
+            message: `${findingsSummary}. Address the requested changes and re-request review.`,
+          });
+        } else if (r.findingsReason === 'not_approved') {
+          blockers.push({
+            code: 'reviewer_not_approved',
+            message: `${findingsSummary}. Obtain an APPROVED review before merging.`,
+          });
+        } else {
+          blockers.push({
+            code: 'reviewer_findings_open',
+            message: `${findingsSummary}. Resolve or dismiss the findings before merging.`,
+          });
+        }
         break;
       }
     }
