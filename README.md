@@ -525,10 +525,12 @@ actually happen.
 
 Three severities: `critical`, `important`, `minor`. Only `critical` and
 `important` block a merge. An unrecognized severity value fails the document
-schema — it comes back `malformed`, not an ignored finding. `minor` findings
-are still reported, in `rloop pr status` output and in the JSON result, so
-the loop can act on them; a report containing only `minor` findings is
-`clean`.
+schema, so the finding is never silently ignored. Which status you see
+follows the classification table above: with a zero exit it is `malformed`;
+with a non-zero exit the provider's own failure signal wins and it is
+`unavailable`. Either way the merge is blocked. `minor` findings are still
+reported, in `rloop pr status` output and in the JSON result, so the loop can
+act on them; a report containing only `minor` findings is `clean`.
 
 ### Fingerprints and clearing findings
 
