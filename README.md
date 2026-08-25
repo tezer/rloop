@@ -49,17 +49,21 @@ merge also requires a **verdict from a reviewer rloop does not control** —
 another model (Copilot, or any review bot) or a human:
 
 ```yaml
-merge:
-  required_reviewers: [copilot-pull-request-reviewer]
-  reviewer_timeout_seconds: 600
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
 ```
 
 That verdict is bound to the commit it was given on. Approve `a5aab06`, push
 again, and it is `reviewer_stale` — two reviewers agreeing about different
-versions of the code is not agreement. Enabling `merge` with an empty
-`required_reviewers` is a config error, not a shortcut: it would leave the
-authoring model as its own last check. Details in
-[The merge gate](#the-merge-gate).
+versions of the code is not agreement. Enabling `merge.enabled` with an empty
+`reviewers:` is not a schema error — `rloop check` only warns — but it can
+never merge: rloop treats "no external review stream configured" as
+degradation, which blocks unconditionally. Details in
+[The merge gate](#the-merge-gate) and
+[Command reviewers](#command-reviewers).
 
 ## Where the models are configured: not here
 
@@ -82,12 +86,15 @@ you launched the server from. Its config names the *server*:
 Which model sits behind that host is the host's own setting. rloop is a tool it
 calls and cannot see what is calling it.
 
-**The one reviewing** is a `required_reviewers` entry, and that is a **forge
-login, not a model**:
+**The one reviewing** is a `reviewers:` entry of `kind: forge`, and its
+`login` is a **forge login, not a model**:
 
 ```yaml
-merge:
-  required_reviewers: [copilot-pull-request-reviewer]
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
 ```
 
 You enable that reviewer on GitHub; rloop only checks whether the login left a
@@ -244,8 +251,9 @@ gh api user -q '"\(.id)+\(.login)@users.noreply.github.com"'
 Then set it: `git config user.email "<that address>"`. The whole `committer`
 block is optional — delete it and the check is skipped.
 
-**`merge.required_reviewers`** is a login, not a display name — and not a model
-either, see [Where the models are configured](#where-the-models-are-configured-not-here).
+**A `reviewers:` forge entry's `login`** is a login, not a display name — and
+not a model either, see
+[Where the models are configured](#where-the-models-are-configured-not-here).
 Bots are where this bites. GitHub Copilot answers to three different spellings across
 three API surfaces; use `copilot-pull-request-reviewer` and let rloop normalize
 (see [Reviewer logins are not one string](#reviewer-logins-are-not-one-string)).
@@ -387,8 +395,12 @@ tool's own failure detection should be tested.
   value redirects HEAD, `status` and any git the gates themselves run — all to
   the same wrong repository, all agreeing. See
   [what it cannot do](#what-it-cannot-do) for the part scrubbing does not fix.
-- **`required_reviewer_state` has no default.** "A review exists" and "the
-  reviewer approved" are different facts; see below.
+- **A forge reviewer's `required_state` has no default.** "A review exists"
+  and "the reviewer approved" are different facts; see below.
+- **Review degradation always blocks the merge.** No reviewers configured, a
+  `kind: command` reviewer that crashed, or one whose output could not be
+  used — each blocks `pr merge` unconditionally, even with every gate green.
+  See [Command reviewers](#command-reviewers).
 
 ### A review is not an approval
 
@@ -399,9 +411,11 @@ So a gate blocking only on `CHANGES_REQUESTED` is checking "did the reviewer
 turn up", which reads like a stronger claim than it is.
 
 ```yaml
-merge:
-  required_reviewers: [copilot-pull-request-reviewer]
-  required_reviewer_state: any_verdict   # or: approved
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict   # or: approved
 ```
 
 - `approved` — only `APPROVED` clears the gate. Right for humans. Makes a
@@ -416,6 +430,172 @@ There is deliberately no default — with `merge.enabled`, this decides what "th
 reviewer was happy" means, and inheriting that silently is the mistake the
 field exists to prevent. rloop found this in its own gate: a `COMMENTED` review
 carrying a real finding satisfied the reviewer condition.
+
+## Command reviewers
+
+`reviewers:` is a top-level list, and it holds two kinds of entry. `kind:
+forge` is everything above — a GitHub login rloop polls for a verdict.
+`kind: command` is a local program you write yourself: no bot to install, no
+network call rloop makes on your behalf, just a process you control.
+
+```yaml
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+
+  - name: local-review
+    kind: command
+    run: my-review-script --base origin/main
+    timeout_seconds: 600        # default; max 3600
+    dismiss:
+      - fingerprint: a1b2c3d4
+        reason: "false positive — checked manually, see PR #123"
+```
+
+### The contract: one JSON document on stdout
+
+rloop runs the command once, from the repo root, with `RLOOP_HEAD_SHA` set to
+the current head commit. The command must print **exactly one JSON document
+on stdout and nothing else** — any narration ("analysing 41 files…", progress
+bars, retries) belongs on **stderr**. rloop captures the two streams
+separately for exactly this reason: a real tool that logs progress would
+otherwise corrupt the document the moment it prints anything.
+
+```json
+{
+  "sha": "<echo of RLOOP_HEAD_SHA>",
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Unchecked null deref",
+      "id": "RULE042",
+      "path": "src/a.ts",
+      "line": 10,
+      "body": "optional free-text detail"
+    }
+  ]
+}
+```
+
+`sha` is required; so are a finding's `severity` and `title`. `id`, `path`,
+`line` and `body` are optional. Every other key — top-level or per-finding —
+fails the schema: a provider printing a field rloop does not recognize is a
+provider written against a different contract, and guessing which half is
+right is how a blocking finding gets silently dropped.
+
+### What the `sha` echo proves, and what it does not
+
+The provider echoes `RLOOP_HEAD_SHA` back as `sha`. That proves the command
+**ran during this invocation** — not a cached document, not a stale file from
+an earlier run left lying around. It does **not** prove the provider actually
+read the tree at that commit; a provider could echo the variable without
+opening a single file. The real binding is not the echo, it is that rloop
+[refuses to run against a dirty
+worktree](#worktree-is-dirty-a-gate-run-against-uncommitted-changes-proves-nothing):
+on a clean tree, "the working tree" and "that commit" are the same bytes, so a
+provider that inspects the former is inspecting the latter. The echo catches
+a *cached* run; the clean-tree requirement is what makes "ran now" mean "ran
+against this commit".
+
+### Classification
+
+Order matters — this table is `runCommandReviewer`'s whole contract:
+
+| Condition | Status |
+|---|---|
+| spawn failed, or timed out | `unavailable` — never ran |
+| stdout unparseable, exit code != 0 | `unavailable` — crashed mid-review |
+| stdout unparseable, exit code == 0 | `malformed` — ran fine, printed junk |
+| parsed, but fails the document schema | `malformed` |
+| echoed `sha` != head | `stale` |
+| blocking findings present | `findings` |
+| otherwise | `clean` |
+
+Nothing on this list returns `clean` on a path where the review did not
+actually happen.
+
+### Severity and what blocks
+
+Three severities: `critical`, `important`, `minor`. Only `critical` and
+`important` block a merge. An unrecognized severity value fails the document
+schema — it comes back `malformed`, not an ignored finding. `minor` findings
+are still reported, in `rloop pr status` output and in the JSON result, so
+the loop can act on them; a report containing only `minor` findings is
+`clean`.
+
+### Fingerprints and clearing findings
+
+Every finding gets an 8-hex-character fingerprint, computed by rloop — never
+supplied by the provider — from its `id` if present, otherwise from `path`
+plus a normalized `title`. It **never incorporates the line number**: an
+edit anywhere above a finding moves the line, and a fingerprint that changed
+on every unrelated edit would report every finding as new on every run. That
+matters because **a finding clears by disappearing from the next run's
+output** — there is no "resolved" flag to set. Paste the printed fingerprint
+into `dismiss:` to suppress a specific finding; `reason` is required, because
+a dismissal with no stated reason is indistinguishable from a finding someone
+silenced because it was inconvenient.
+
+### Degradation always blocks the merge
+
+Three situations count as review **degradation**, and each blocks `pr merge`
+unconditionally — every gate being green is not enough:
+
+| Reason | When |
+|---|---|
+| `not_configured` | `merge.enabled` is true and `reviewers:` is empty |
+| `unavailable` | any configured reviewer's status is `unavailable` |
+| `malformed` | any configured reviewer's status is `malformed` |
+
+Degradation prints a banner (`⚠ EXTERNAL REVIEW DEGRADED`) and adds a
+`reviewer_degraded` blocker regardless of what else passed. Gates still run —
+degradation is about the review stream, not the code under test — but the
+merge does not happen without one.
+
+### Blocker codes
+
+Alongside the forge-only codes that already existed —
+`reviewer_changes_requested`, `reviewer_not_approved`, `reviewer_no_verdict`,
+`reviewer_stale` — a `reviewers:` block can now produce:
+
+| Code | Means |
+|---|---|
+| `reviewer_degraded` | review is degraded — see above; always blocks |
+| `reviewer_unavailable` | a reviewer's status is `unavailable` |
+| `reviewer_malformed` | a reviewer's status is `malformed` |
+| `reviewer_findings_open` | a `kind: command` reviewer has open (non-dismissed) blocking findings |
+
+### Deprecated: `merge.required_reviewers` / `merge.required_reviewer_state`
+
+These two keys still work — rloop 0.2.1 is published and configs in the wild
+set them. `loadConfig` desugars each login in `required_reviewers` into a
+`kind: forge` entry in `reviewers:`, using `required_reviewer_state` (default
+`approved`) as its `required_state`, and `rloop check` prints a warning
+pointing at the replacement. They will be removed in 1.0.
+
+Setting **both** forms — the deprecated keys and a non-empty `reviewers:` — is
+a config error, not a merge: two sources of truth for who must review a PR is
+a config whose author cannot predict what will happen.
+
+```yaml
+# Old (still works, but deprecated and warned about):
+merge:
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+
+# New, equivalent:
+reviewers:
+  - name: copilot-pull-request-reviewer
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+```
+
+The desugared entry's `name` is the login itself. Migrating by hand and
+giving it a friendlier report name (`copilot` instead of the full login) is a
+deliberate difference from auto-desugaring, not a bug.
 
 ## What it cannot do
 
