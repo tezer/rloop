@@ -42,6 +42,22 @@ export type FindingsReason =
   | 'not_approved'
   | 'provider_findings';
 
+/**
+ * WHY a reviewer is `unavailable`. `command.ts` collapses three distinct
+ * causes into that one status — a spawn failure/timeout never even started,
+ * unusable output paired with a non-zero exit crashed partway through, and a
+ * parseable document reporting nothing blocking paired with a non-zero exit
+ * is the provider contradicting itself. All three block a merge identically
+ * (hence one status, not three), but "could not run" is only true for the
+ * first: the other two describe a process that DID run. This field lets the
+ * blocker message say which one happened instead of merge-gate.ts guessing
+ * from `detail` text.
+ */
+export type UnavailableReason =
+  | 'never_ran'
+  | 'crashed'
+  | 'contradicted';
+
 export interface Finding {
   /** Provider-supplied stable id, when it has one. */
   id: string | null;
@@ -81,6 +97,8 @@ export interface ReviewerReport {
   detail: string | null;
   /** Set exactly when `status` is `findings`; null otherwise. */
   findingsReason: FindingsReason | null;
+  /** Set exactly when `status` is `unavailable`; null otherwise. See UnavailableReason. */
+  unavailableReason: UnavailableReason | null;
 }
 
 /**

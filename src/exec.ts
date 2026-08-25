@@ -28,6 +28,12 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
     const startedAt = Date.now();
     const chunks: string[] = [];
     let timedOut = false;
+    // Node documents 'error' as firing before 'exit' when a spawn fails, but
+    // that ordering is a runtime guarantee, not something this function's
+    // correctness should lean on silently — guard it directly, same as
+    // src/reviewers/read-json.ts, so a second event is a no-op instead of a
+    // second resolve() call.
+    let settled = false;
 
     const child = spawn('bash', ['-c', command], {
       cwd: opts.cwd,
@@ -58,6 +64,8 @@ export function runCommand(command: string, opts: CommandOptions): Promise<Comma
     }, opts.timeoutMs);
 
     const settle = (exitCode: number | null, spawnError: Error | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       resolve({
         output: chunks.join(''),

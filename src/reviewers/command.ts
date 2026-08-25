@@ -18,9 +18,10 @@ const short = (sha: string) => sha.slice(0, 7);
  * Classification order matters and is the whole contract:
  *
  *   spawn failed / timed out                     -> unavailable  (never ran)
- *   unparseable AND exit != 0                    -> unavailable  (crashed mid-review)
- *   unparseable AND exit == 0                    -> malformed    (ran fine, printed junk)
- *   parsed but fails the schema                  -> malformed
+ *   output unusable (unparseable OR fails the
+ *     document schema) AND exit != 0             -> unavailable  (crashed mid-review)
+ *   output unusable (unparseable OR fails the
+ *     document schema) AND exit == 0             -> malformed    (ran fine, printed junk)
  *   echoed sha != head                           -> stale
  *   blocking findings present                    -> findings     (exit code irrelevant)
  *   no blocking findings AND exit != 0            -> unavailable  (signals contradict)
@@ -43,7 +44,14 @@ export async function runCommandReviewer(
   rev: CommandReviewer,
   opts: { repoRoot: string; headSha: string },
 ): Promise<ReviewerReport> {
-  const base = { name: rev.name, kind: 'command' as const, sha: null, findings: [], findingsReason: null };
+  const base = {
+    name: rev.name,
+    kind: 'command' as const,
+    sha: null,
+    findings: [],
+    findingsReason: null,
+    unavailableReason: null,
+  };
 
   const run = await readProviderJson(rev.run, {
     cwd: opts.repoRoot,
@@ -55,6 +63,7 @@ export async function runCommandReviewer(
     return assertFindingsReasonCoupling({
       ...base,
       status: 'unavailable',
+      unavailableReason: 'never_ran',
       detail: `could not start: ${run.spawnError.message}`,
     });
   }
@@ -62,6 +71,7 @@ export async function runCommandReviewer(
     return assertFindingsReasonCoupling({
       ...base,
       status: 'unavailable',
+      unavailableReason: 'never_ran',
       detail: `timed out after ${rev.timeout_seconds}s`,
     });
   }
@@ -72,6 +82,7 @@ export async function runCommandReviewer(
       return assertFindingsReasonCoupling({
         ...base,
         status: 'unavailable',
+        unavailableReason: 'crashed',
         detail: `exited ${run.exitCode} without a usable document: ${run.stderr.slice(0, 200)}`,
       });
     }
@@ -117,6 +128,7 @@ export async function runCommandReviewer(
     return assertFindingsReasonCoupling({
       ...base,
       status: 'unavailable',
+      unavailableReason: 'contradicted',
       sha: parsed.doc.sha,
       findings,
       detail:

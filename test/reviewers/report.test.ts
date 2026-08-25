@@ -76,6 +76,7 @@ function report(overrides: Partial<ReviewerReport>): ReviewerReport {
     findings: [],
     detail: null,
     findingsReason: 'provider_findings',
+    unavailableReason: null,
     ...overrides,
   };
 }

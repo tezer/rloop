@@ -28,4 +28,18 @@ describe('runCommand', () => {
     expect(r.output).toContain('RLOOP_DONE');
     expect(elapsed).toBeLessThan(1_500);
   });
+
+  it('does not truncate a several-hundred-KB payload (large-payload regression guard)', async () => {
+    // Same property src/reviewers/read-json.ts pins for provider documents,
+    // guarded here too since gate output goes through this same 'exit'-based
+    // resolution.
+    const size = 400 * 1024;
+    const r = await runCommand(`node -e "process.stdout.write('x'.repeat(${size}) + 'END-OF-OUTPUT')"`, {
+      cwd: process.cwd(),
+      timeoutMs: 15_000,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toHaveLength(size + 'END-OF-OUTPUT'.length);
+    expect(r.output.endsWith('END-OF-OUTPUT')).toBe(true);
+  });
 });

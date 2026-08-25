@@ -11,6 +11,7 @@ function report(overrides: Partial<ReviewerReport>): ReviewerReport {
     findings: [],
     detail: null,
     findingsReason: null,
+    unavailableReason: null,
     ...overrides,
   };
 }

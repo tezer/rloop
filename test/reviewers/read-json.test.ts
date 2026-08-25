@@ -82,4 +82,16 @@ describe('readProviderJson', () => {
     const r = await run('clean.mjs');
     expect(JSON.parse(r.stdout).sha).toBe('a'.repeat(40));
   });
+
+  it('does not truncate a several-hundred-KB document (large-payload regression guard)', async () => {
+    // Two reviewers empirically verified resolving on 'exit' does not
+    // truncate output (20MB, 100+ trials on Linux/Node 22) — this pins that
+    // property in the suite instead of leaving it only remembered.
+    const r = await run('large-payload.mjs');
+    const size = 400 * 1024;
+    expect(r.stdout.length).toBeGreaterThan(size);
+    const doc = JSON.parse(r.stdout);
+    expect(doc.findings[0].body).toHaveLength(size);
+    expect(doc.findings[0].body.endsWith('END-OF-BODY')).toBe(true);
+  });
 });

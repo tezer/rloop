@@ -36,7 +36,9 @@ export type ParseResult =
 
 /**
  * Parse and validate. Never throws — the caller turns a failure into a
- * `malformed` report, which is a verdict, not a crash.
+ * verdict, not a crash. Which verdict depends on the exit code it saw
+ * alongside this result: `malformed` on a zero exit, `unavailable` on a
+ * non-zero one. See the classification table in `command.ts`.
  */
 export function parseProviderDocument(text: string): ParseResult {
   let raw: unknown;

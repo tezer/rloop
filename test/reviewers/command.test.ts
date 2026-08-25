@@ -48,6 +48,9 @@ describe('runCommandReviewer', () => {
       { repoRoot: process.cwd(), headSha: HEAD },
     );
     expect(r.status).toBe('unavailable');
+    // bash itself spawned fine and exited 127 with unparseable output — it
+    // ran, unlike an unspawnable cwd, so this is 'crashed', not 'never_ran'.
+    expect(r.unavailableReason).toBe('crashed');
   });
 
   it('reports unavailable when the command cannot be SPAWNED at all', async () => {
@@ -60,10 +63,17 @@ describe('runCommandReviewer', () => {
     });
     expect(r.status).toBe('unavailable');
     expect(r.detail).toMatch(/could not start/);
+    // Never ran at all — this is the one cause "could not run" is true of.
+    expect(r.unavailableReason).toBe('never_ran');
   });
 
   it('reports unavailable when the command crashes without a document', async () => {
-    expect((await go('crash.mjs')).status).toBe('unavailable');
+    const r = await go('crash.mjs');
+    expect(r.status).toBe('unavailable');
+    // The process ran and exited non-zero without usable output — distinct
+    // from never having run at all (see I1: merge-gate.ts must not say
+    // "could not run" for this cause, since it did run).
+    expect(r.unavailableReason).toBe('crashed');
   });
 
   it('reports MALFORMED, not unavailable, when it exits 0 with junk', async () => {
@@ -80,7 +90,9 @@ describe('runCommandReviewer', () => {
     // The exit code is the provider's own verdict on whether it ran. rloop
     // trusts that over the shape of whatever it printed: a non-zero exit
     // beats a schema failure, same as it beats an unparseable document.
-    expect((await go('bad-schema-exit-1.mjs')).status).toBe('unavailable');
+    const r = await go('bad-schema-exit-1.mjs');
+    expect(r.status).toBe('unavailable');
+    expect(r.unavailableReason).toBe('crashed');
   });
 
   it('reports findings, not clean or unavailable, when a parsed document has blocking findings and a non-zero exit', async () => {
@@ -104,6 +116,9 @@ describe('runCommandReviewer', () => {
     expect(r.status).toBe('unavailable');
     expect(r.findingsReason).toBeNull();
     expect(r.detail).toMatch(/contradict/i);
+    // It ran and produced a valid document — merge-gate.ts must not render
+    // this as "could not run" (I1). unavailableReason is how it knows not to.
+    expect(r.unavailableReason).toBe('contradicted');
   });
 
   it('reports stale when the echoed sha is not the head', async () => {
@@ -126,7 +141,16 @@ describe('runCommandReviewer', () => {
     );
     expect(r.status).toBe('unavailable');
     expect(r.detail).toMatch(/timed out/i);
+    expect(r.unavailableReason).toBe('never_ran');
   }, 20_000);
+
+  it('does not truncate a several-hundred-KB document round-tripped through parsing (large-payload regression guard)', async () => {
+    const r = await go('large-payload.mjs');
+    expect(r.status).toBe('clean'); // minor-only
+    const size = 400 * 1024;
+    expect(r.findings[0].body).toHaveLength(size);
+    expect(r.findings[0].body?.endsWith('END-OF-BODY')).toBe(true);
+  });
 
   it('a dismissed blocking finding is reported but does not block', async () => {
     const first = await go('findings.mjs');

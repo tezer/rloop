@@ -159,12 +159,24 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         });
         break;
       }
-      case 'unavailable':
+      case 'unavailable': {
+        // `unavailable` collapses three distinct causes (see UnavailableReason
+        // in reviewers/types.ts). "Could not run" is only true for the first —
+        // the other two describe a process that DID run and even produced a
+        // document. Asserting "could not run" for those is self-contradictory
+        // when `detail` goes on to describe exit codes and documents.
+        const lead =
+          r.unavailableReason === 'crashed'
+            ? `Reviewer "${r.name}" ran but crashed before producing a usable review`
+            : r.unavailableReason === 'contradicted'
+              ? `Reviewer "${r.name}" ran and produced a document, but its own signals contradict each other`
+              : `Reviewer "${r.name}" could not run`;
         blockers.push({
           code: 'reviewer_unavailable',
-          message: `Reviewer "${r.name}" could not run: ${r.detail ?? 'no detail'}`,
+          message: `${lead}: ${r.detail ?? 'no detail'}`,
         });
         break;
+      }
       case 'malformed':
         blockers.push({
           code: 'reviewer_malformed',

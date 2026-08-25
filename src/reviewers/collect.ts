@@ -42,7 +42,15 @@ function forgeReport(
   rev: Extract<RloopConfig['reviewers'][number], { kind: 'forge' }>,
   opts: { headSha: string; reviews: ReviewVerdict[] },
 ): ReviewerReport {
-  const base = { name: rev.name, kind: 'forge' as const, findings: [], findingsReason: null };
+  const base = {
+    name: rev.name,
+    kind: 'forge' as const,
+    findings: [],
+    findingsReason: null,
+    // A forge reviewer's report never reaches `status: 'unavailable'` — that
+    // status is a `kind: command` outcome (see command.ts). Always null here.
+    unavailableReason: null,
+  };
   const theirs = opts.reviews.filter((r) => matchesReviewer(rev.login, r.author));
 
   if (theirs.length === 0) {

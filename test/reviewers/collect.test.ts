@@ -217,6 +217,7 @@ describe('degradationOf', () => {
           findings: [],
           detail: 'ENOENT',
           findingsReason: null,
+          unavailableReason: 'never_ran',
         },
       ],
       cfg,

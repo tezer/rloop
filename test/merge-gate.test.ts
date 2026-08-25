@@ -4,7 +4,7 @@ import { loadConfig, type RloopConfig } from '../src/config.js';
 import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from '../src/forge/types.js';
 import { evaluateMergeGate, type BlockerCode } from '../src/merge-gate.js';
 import { collectReviewerReports, degradationOf } from '../src/reviewers/collect.js';
-import type { Finding, ReviewerReport, ReviewerStatus } from '../src/reviewers/types.js';
+import { assertFindingsReasonCoupling, type Finding, type ReviewerReport, type ReviewerStatus } from '../src/reviewers/types.js';
 import type { GateRunResult } from '../src/types.js';
 
 const HEAD = 'a'.repeat(40);
@@ -431,16 +431,39 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
   ...over,
 });
 
-const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => ({
-  name: 'copilot',
-  kind: 'forge',
-  status: 'clean',
-  sha: HEAD,
-  findings: [],
-  detail: null,
-  findingsReason: null,
-  ...over,
-});
+/**
+ * Builds a `ReviewerReport` for `evaluateMergeGate` tests.
+ *
+ * Defaults `findingsReason` (and `unavailableReason`) from `status`, so a
+ * test that only cares about, say, `reviewer_findings_open` does not also
+ * have to remember the findingsReason/status coupling. The result is then
+ * run through `assertFindingsReasonCoupling` — the same invariant check
+ * `command.ts` and `collect.ts` apply at their own construction sites — so
+ * this helper is a real call site of the assertion, not just a plain object
+ * literal that could drift out of sync with it unnoticed. Previously this
+ * helper set `findingsReason: null` unconditionally and never ran the
+ * assertion, so `report({ status: 'findings' })` silently built an
+ * inconsistent report and fed it straight to evaluateMergeGate — the exact
+ * gap the assertion exists to close.
+ *
+ * A test that deliberately WANTS an inconsistent report to reach
+ * evaluateMergeGate (bypassing this helper's own check) must construct the
+ * `ReviewerReport` object literal itself instead of calling this helper.
+ */
+const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => {
+  const status = over.status ?? 'clean';
+  return assertFindingsReasonCoupling({
+    name: 'copilot',
+    kind: 'forge',
+    status: 'clean',
+    sha: HEAD,
+    findings: [],
+    detail: null,
+    findingsReason: status === 'findings' ? 'provider_findings' : null,
+    unavailableReason: status === 'unavailable' ? 'never_ran' : null,
+    ...over,
+  });
+};
 
 // Named `blockerCodes`, not `codes` — this file already has a top-level
 // `codes` helper with a different signature (it takes an already-evaluated
@@ -474,6 +497,46 @@ describe('reviewer reports', () => {
     expect(blockerCodes({ reviewerReports: [report({ status: 'unavailable', detail: 'ENOENT' })] })).toContain(
       'reviewer_unavailable',
     );
+  });
+
+  describe('unavailable wording, per cause (I1)', () => {
+    // `unavailable` collapses three causes into one status (see
+    // UnavailableReason in src/reviewers/types.ts). Only the first is
+    // actually true to say "could not run" — the other two describe a
+    // process that DID run and even produced a document. Each case here
+    // pins the wording rloop actually shows for that cause.
+    const messageFor = (unavailableReason: ReviewerReport['unavailableReason'], detail: string) =>
+      evaluateMergeGate({
+        cfg: cfg(),
+        pr: pr(),
+        gateRun: greenRun(),
+        reviewerReports: [report({ status: 'unavailable', unavailableReason, detail })],
+        degradation: null,
+        threads: [],
+      }).blockers.find((b) => b.code === 'reviewer_unavailable')?.message;
+
+    it('never_ran (spawn failure or timeout): says "could not run"', () => {
+      const message = messageFor('never_ran', 'could not start: ENOENT');
+      expect(message).toContain('could not run');
+      expect(message).toContain('ENOENT');
+    });
+
+    it('crashed (unusable output, non-zero exit): ran but crashed, not "could not run"', () => {
+      const message = messageFor('crashed', 'exited 1 without a usable document: boom');
+      expect(message).not.toContain('could not run');
+      expect(message).toContain('crashed');
+      expect(message).toContain('exited 1 without a usable document');
+    });
+
+    it('contradicted (clean document, non-zero exit): does not claim "could not run" — it ran and produced a document', () => {
+      const message = messageFor(
+        'contradicted',
+        'exited 1 but its document reports no blocking findings — the provider\'s own signals contradict each other',
+      );
+      expect(message).not.toContain('could not run');
+      expect(message).toContain('contradict');
+      expect(message).toContain('produced a document');
+    });
   });
 
   it('blocks a malformed reviewer separately from an unavailable one', () => {
@@ -723,5 +786,19 @@ merge:
     });
     expect(d.allowed).toBe(false);
     expect(d.blockers.map((b) => b.code)).toContain('reviewer_degraded');
+  });
+
+  it('the report() helper itself enforces the findingsReason/status coupling (I2)', () => {
+    // This file's own `report()` helper used to default findingsReason to
+    // `null` unconditionally and never call assertFindingsReasonCoupling, so
+    // `report({ status: 'findings' })` (see 'blocks open findings' above)
+    // silently built an inconsistent ReviewerReport and fed it straight to
+    // evaluateMergeGate — bypassing the exact invariant
+    // assertFindingsReasonCoupling exists to enforce. Now the helper routes
+    // every report it builds through that assertion, so a deliberately
+    // inconsistent override (findingsReason forced back to null on a
+    // 'findings' status) throws here, at the test's own construction site,
+    // instead of reaching evaluateMergeGate unchecked.
+    expect(() => report({ status: 'findings', findingsReason: null })).toThrow(/findingsReason/);
   });
 });
