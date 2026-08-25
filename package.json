@@ -1,6 +1,6 @@
 {
   "name": "@tezer/rloop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Evidence-based merge gate for AI-authored PRs. Exit codes lie; prove green with output.",
   "keywords": [
     "merge-gate",
@@ -48,6 +48,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "rm -rf dist && tsc -p tsconfig.json && vitest run"

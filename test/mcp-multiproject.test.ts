@@ -109,7 +109,7 @@ describe('mcp multi-project mode', () => {
 
     for (const p of [alpha, beta]) {
       const read = await client.readResource({ uri: `rloop://config${p.config}` });
-      const body = JSON.parse(read.contents[0].text as string);
+      const body = JSON.parse((read.contents[0] as { text: string }).text);
       expect(body.configPath).toBe(p.config);
       expect(body.repoRoot).toBe(path.resolve(p.dir));
     }

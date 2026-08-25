@@ -60,13 +60,22 @@ merge:
   method: squash
   delete_branch: true
   require_threads_resolved: true
+
+reviewers:
   # The model that wrote the PR is not allowed to be its own last check.
-  required_reviewers: [copilot-pull-request-reviewer]
-  # Copilot never submits APPROVED — it files findings as COMMENTED threads,
-  # so require_threads_resolved above is what actually gates them. Use
-  # `approved` for a human reviewer. There is no default: see the README.
-  required_reviewer_state: any_verdict
-  reviewer_timeout_seconds: 600
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    # Copilot never submits APPROVED — it files findings as COMMENTED threads,
+    # so require_threads_resolved above is what actually gates them. Use
+    # `approved` for a human reviewer. There is no default: see the README.
+    required_state: any_verdict
+
+  # A second opinion that never touches the network. Must print one JSON
+  # document on stdout — narration belongs on stderr.
+  # - name: codex
+  #   kind: command
+  #   run: codex review --base origin/main --json
 
 parallel_gates: false
 

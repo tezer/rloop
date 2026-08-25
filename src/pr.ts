@@ -5,6 +5,8 @@ import { matchesReviewer } from './forge/types.js';
 import { runGates } from './gate.js';
 import { changedPaths } from './git.js';
 import { evaluateMergeGate, type MergeDecision } from './merge-gate.js';
+import { collectReviewerReports, degradationOf, type Degradation } from './reviewers/collect.js';
+import type { ReviewerReport } from './reviewers/types.js';
 import type { GateRunResult } from './types.js';
 
 export function forgeFor(cfg: RloopConfig): Forge {
@@ -21,6 +23,8 @@ export interface PrStatus {
   gateRun: GateRunResult;
   reviews: ReviewVerdict[];
   threads: ReviewThread[];
+  reviewerReports: ReviewerReport[];
+  degradation: Degradation | null;
   decision: MergeDecision;
 }
 
@@ -67,8 +71,22 @@ export async function prStatus(
     gateRun = await runGates(cfg, { repoRoot: opts.repoRoot, changedPaths: diff });
   }
 
-  const decision = evaluateMergeGate({ cfg, pr, gateRun, reviews, threads });
-  return { pr, gateRun, reviews, threads, decision };
+  const reviewerReports = await collectReviewerReports(cfg, {
+    repoRoot: opts.repoRoot,
+    headSha: pr.headSha,
+    reviews,
+  });
+  const degradation = degradationOf(reviewerReports, cfg);
+
+  const decision = evaluateMergeGate({
+    cfg,
+    pr,
+    gateRun,
+    reviewerReports,
+    degradation,
+    threads,
+  });
+  return { pr, gateRun, reviews, threads, reviewerReports, degradation, decision };
 }
 
 /**

@@ -220,7 +220,8 @@ export function createServer(): McpServer {
     async ({ pr, skipGates, configPath, repoRoot: rr }) => {
       try {
         const { cfg, repoRoot } = await ctx({ configPath, repoRoot: rr });
-        return ok(await prStatus(cfg, { repoRoot, prNumber: pr, skipGates }));
+        const status = await prStatus(cfg, { repoRoot, prNumber: pr, skipGates });
+        return ok({ ...status, degraded: status.degradation });
       } catch (err) {
         return fail(err);
       }
@@ -302,6 +303,7 @@ export function createServer(): McpServer {
           merged: result.merged,
           blockers: result.decision.blockers,
           sha: result.decision.sha,
+          degraded: result.status.degradation,
         });
       } catch (err) {
         return fail(err);

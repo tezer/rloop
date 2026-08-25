@@ -1,5 +1,8 @@
 import type { RloopConfig } from './config.js';
-import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from './forge/types.js';
+import type { PullRequest, ReviewThread } from './forge/types.js';
+import type { Degradation } from './reviewers/collect.js';
+import { isBlocking } from './reviewers/types.js';
+import type { ReviewerReport } from './reviewers/types.js';
 import type { GateRunResult } from './types.js';
 
 export type BlockerCode =
@@ -9,8 +12,12 @@ export type BlockerCode =
   | 'pr_draft'
   | 'gates_not_green'
   | 'sha_mismatch_gates'
+  | 'reviewer_degraded'
   | 'reviewer_no_verdict'
   | 'reviewer_stale'
+  | 'reviewer_unavailable'
+  | 'reviewer_malformed'
+  | 'reviewer_findings_open'
   | 'reviewer_changes_requested'
   | 'reviewer_not_approved'
   | 'threads_unresolved';
@@ -24,7 +31,8 @@ export interface MergeGateInput {
   cfg: RloopConfig;
   pr: PullRequest;
   gateRun: GateRunResult;
-  reviews: ReviewVerdict[];
+  reviewerReports: ReviewerReport[];
+  degradation: Degradation | null;
   threads: ReviewThread[];
 }
 
@@ -49,7 +57,7 @@ const short = (sha: string) => sha.slice(0, 7);
  * No review yet is not approval. No gate result is not green.
  */
 export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
-  const { cfg, pr, gateRun, reviews, threads } = input;
+  const { cfg, pr, gateRun, threads } = input;
   const blockers: Blocker[] = [];
 
   if (!cfg.merge.enabled) {
@@ -96,55 +104,162 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
     });
   }
 
-  // Part two: each required reviewer vs PR head.
-  for (const required of cfg.merge.required_reviewers) {
-    const theirs = reviews.filter((r) => matchesReviewer(required, r.author));
+  // Degradation blocks unconditionally. The operator chose: rloop may run
+  // everything else without an external reviewer, but it may not MERGE
+  // without one. A provider that is merely down is indistinguishable at
+  // runtime from one deliberately absent, and merging through the second
+  // silently merges through the first.
+  if (input.degradation) {
+    blockers.push({
+      code: 'reviewer_degraded',
+      message:
+        `External review is degraded (${input.degradation.reason}): ` +
+        `${input.degradation.message} Gates still ran; the merge does not.`,
+    });
+  } else if (input.reviewerReports.length === 0) {
+    // Defends this function's own public contract, independent of any
+    // caller. `degradationOf` normally catches "no reviewers configured" and
+    // sets `degradation`, but `evaluateMergeGate` is exported from
+    // src/index.ts and can be called directly with an empty reviewerReports
+    // array and no degradation computed at all. An empty reviewer list is a
+    // missing signal exactly like `degradationOf` says it is — it must block
+    // here too, not just when the one caller that remembers to call
+    // `degradationOf` first happens to be the one invoking this.
+    blockers.push({
+      code: 'reviewer_degraded',
+      message:
+        'No reviewer reports were supplied and no degradation was reported: there is no ' +
+        'external review stream. A missing signal is a blocker, never a pass.',
+    });
+  }
 
-    if (theirs.length === 0) {
-      blockers.push({
-        code: 'reviewer_no_verdict',
-        message: `No review from "${required}" at all. Absence of a verdict is NOT approval.`,
-      });
-      continue;
-    }
+  for (const r of input.reviewerReports) {
+    switch (r.status) {
+      case 'clean':
+        break;
+      case 'absent':
+        blockers.push({
+          code: 'reviewer_no_verdict',
+          message: `No review from "${r.name}" at all. Absence of a verdict is NOT approval.`,
+        });
+        break;
+      case 'stale': {
+        // The remedy differs by kind: a forge review can be re-requested; a
+        // command reviewer has no review to request, only a re-run. Branch
+        // it, as the README's troubleshooting section already does.
+        const advice =
+          r.kind === 'forge'
+            ? 're-request review on the current commit'
+            : 're-run the reviewer against the current commit';
+        blockers.push({
+          code: 'reviewer_stale',
+          message:
+            `Latest review from "${r.name}" is against ${short(r.sha ?? '')}, but PR head is ` +
+            `${short(pr.headSha)}. Stale — ${advice}.`,
+        });
+        break;
+      }
+      case 'unavailable': {
+        // `unavailable` collapses three distinct causes (see UnavailableReason
+        // in reviewers/types.ts). "Could not run" is only true for the first —
+        // the other two describe a process that DID run and even produced a
+        // document. Asserting "could not run" for those is self-contradictory
+        // when `detail` goes on to describe exit codes and documents.
+        const lead =
+          r.unavailableReason === 'crashed'
+            ? `Reviewer "${r.name}" ran but crashed before producing a usable review`
+            : r.unavailableReason === 'contradicted'
+              ? `Reviewer "${r.name}" ran and produced a document, but its own signals contradict each other`
+              : `Reviewer "${r.name}" could not run`;
+        blockers.push({
+          code: 'reviewer_unavailable',
+          message: `${lead}: ${r.detail ?? 'no detail'}`,
+        });
+        break;
+      }
+      case 'malformed':
+        blockers.push({
+          code: 'reviewer_malformed',
+          message:
+            `Reviewer "${r.name}" ran but its output could not be used: ${r.detail ?? 'no detail'}. ` +
+            `A reviewer you broke is a different problem from one you never had — fix the wrapper.`,
+        });
+        break;
+      case 'findings': {
+        // Sample only the findings that actually block. `open` (not dismissed)
+        // is not the same set as "blocking" — a report can carry minor
+        // findings alongside the one that matters, and a sample drawn from
+        // `open` can bury the actual blocker under "(+N more)" while naming
+        // only the minors. It also steers the operator toward dismissing
+        // findings that were never blocking in the first place, which grows
+        // the dismiss list src/reviewers/command.ts warns can pre-suppress
+        // real findings.
+        const blocking = r.findings.filter((f) => !f.dismissed && isBlocking(f.severity));
+        const sample = blocking.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
+        const findingsList =
+          (sample ? `: ${sample}` : '') +
+          (blocking.length > 3 ? ` (+${blocking.length - 3} more)` : '');
+        const detailSuffix = r.detail ? ` — ${r.detail}` : '';
 
-    // Latest by submission time; fall back to array order when a review has no
-    // timestamp (pending reviews do not).
-    const latest = theirs.reduce((a, b) =>
-      (b.submittedAt ?? '') >= (a.submittedAt ?? '') ? b : a,
-    );
-
-    if (latest.sha !== pr.headSha) {
-      blockers.push({
-        code: 'reviewer_stale',
-        message:
-          `Latest review from "${required}" is against ${short(latest.sha)}, but PR head is ` +
-          `${short(pr.headSha)}. Stale — re-request review on the current commit.`,
-      });
-      continue;
-    }
-
-    if (latest.state === 'CHANGES_REQUESTED') {
-      blockers.push({
-        code: 'reviewer_changes_requested',
-        message: `"${required}" requested changes on ${short(latest.sha)}.`,
-      });
-      continue;
-    }
-
-    // Under `approved`, a COMMENTED review is not an approval — it is a
-    // reviewer who looked and declined to say yes. Treating those as
-    // interchangeable is what made "the reviewer was happy" mean "the reviewer
-    // turned up".
-    if (cfg.merge.required_reviewer_state === 'approved' && latest.state !== 'APPROVED') {
-      blockers.push({
-        code: 'reviewer_not_approved',
-        message:
-          `"${required}" left a ${latest.state} review on ${short(latest.sha)}, not an ` +
-          `APPROVED one. Config requires required_reviewer_state: approved. ` +
-          `(A reviewer that never approves — Copilot files findings as COMMENTED — ` +
-          `needs "any_verdict" plus require_threads_resolved.)`,
-      });
+        // `status: findings` alone cannot tell an operator what to DO: a forge
+        // reviewer that requested changes and one that merely commented under
+        // required_state: approved both land here, but one needs the findings
+        // fixed and the other needs an approval nobody has to actually
+        // disagree to withhold. findingsReason carries that distinction back
+        // out as its own code, each naming the action that clears it.
+        //
+        // The wording must branch on it too: forge reviewers ALWAYS carry
+        // `findings: []` — their findings live in review threads, not this
+        // array — so "has open findings" is simply false for them. Only the
+        // `provider_findings` case (a `kind: command` reviewer) actually has
+        // findings to list.
+        if (r.findingsReason === 'changes_requested') {
+          blockers.push({
+            code: 'reviewer_changes_requested',
+            message:
+              `"${r.name}" requested changes${detailSuffix}. Address the requested changes ` +
+              `and re-request review.`,
+          });
+        } else if (r.findingsReason === 'not_approved') {
+          const reviewerCfg = cfg.reviewers.find((rv) => rv.name === r.name);
+          const requiredState = reviewerCfg?.kind === 'forge' ? reviewerCfg.required_state : null;
+          blockers.push({
+            code: 'reviewer_not_approved',
+            message:
+              `"${r.name}" reviewed without approving` +
+              (requiredState ? ` (required_state: "${requiredState}")` : '') +
+              `${detailSuffix}. Obtain an APPROVED review before merging.`,
+          });
+        } else {
+          blockers.push({
+            code: 'reviewer_findings_open',
+            message:
+              `"${r.name}" has open findings${findingsList}${detailSuffix}. Resolve or dismiss ` +
+              `the findings before merging.`,
+          });
+        }
+        break;
+      }
+      default: {
+        // Fails closed, on two levels. First, at compile time: if a seventh
+        // ReviewerStatus is ever added and this switch is not updated for it,
+        // `r.status` here is no longer assignable to `never` and the build
+        // breaks — the fall-through direction for an unhandled status must be
+        // "block", never "permit" by omission, for a tool whose entire job is
+        // refusing unsafe merges. Second, at runtime: the type system's
+        // guarantee doesn't survive a cast (`as unknown as ReviewerStatus`) or
+        // a value arriving from parsed JSON, so an unrecognized status still
+        // has to produce a blocker rather than silently falling out of the
+        // switch with nothing pushed. rloop not understanding its own report
+        // IS a degraded review signal.
+        const _exhaustive: never = r.status;
+        blockers.push({
+          code: 'reviewer_degraded',
+          message:
+            `Reviewer "${r.name}" reported an unrecognized status (${String(_exhaustive)}). ` +
+            `rloop cannot evaluate this report, which is itself a degraded review signal.`,
+        });
+      }
     }
   }
 

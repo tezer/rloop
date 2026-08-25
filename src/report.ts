@@ -1,5 +1,7 @@
 import type { ConfigWarning } from './config.js';
 import type { PreflightRunResult } from './preflight.js';
+import type { Degradation } from './reviewers/collect.js';
+import type { ReviewerReport } from './reviewers/types.js';
 import type { GateResult, GateRunResult } from './types.js';
 
 const useColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
@@ -83,11 +85,32 @@ function formatGate(gate: GateResult): string {
   return lines.join('\n');
 }
 
+/**
+ * The in-band notification.
+ *
+ * rloop has no channel to the operator except its own output, so this is the
+ * whole notification mechanism — it must be unmissable in a scrollback and
+ * must state what rloop did and did not do, rather than leaving it inferred.
+ */
+export function formatDegradation(d: Degradation | null): string {
+  if (!d) return '';
+  const who = d.provider ? ` [${d.provider}]` : '';
+  return [
+    '',
+    '  ⚠ EXTERNAL REVIEW DEGRADED — ' + d.reason + who,
+    '    ' + d.message,
+    '    Gates still ran. rloop will NOT merge without an external review stream.',
+    '',
+  ].join('\n');
+}
+
 export function formatPrStatus(s: {
   pr: { number: number; baseRef: string; headSha: string; state: string; isDraft: boolean; title: string };
   reviews: { author: string; state: string; sha: string }[];
   threads: { isResolved: boolean }[];
   decision: { allowed: boolean; blockers: { code: string; message: string }[] };
+  reviewerReports?: ReviewerReport[];
+  degradation?: Degradation | null;
 }): string {
   const lines: string[] = [];
   const head = s.pr.headSha.slice(0, 7);
@@ -95,6 +118,20 @@ export function formatPrStatus(s: {
   lines.push(
     dim(`  ${s.pr.state}${s.pr.isDraft ? ' (draft)' : ''} · → ${s.pr.baseRef} · head ${head}`),
   );
+  // Pushed conditionally: `formatDegradation` returns '' when nothing is
+  // degraded, and pushing that unconditionally would still land as a blank
+  // array entry — doubling up with the blank line below it.
+  const banner = formatDegradation(s.degradation ?? null);
+  if (banner) lines.push(banner);
+
+  for (const r of s.reviewerReports ?? []) {
+    const mark = r.status === 'clean' ? '✓' : r.status === 'findings' ? '✗' : '~';
+    lines.push(`  ${mark} ${r.name} (${r.kind}): ${r.status}${r.detail ? ` — ${r.detail}` : ''}`);
+    for (const f of r.findings) {
+      const tag = f.dismissed ? 'dismissed' : f.severity;
+      lines.push(`      ${f.fingerprint}  ${tag.padEnd(9)} ${f.title}`);
+    }
+  }
   lines.push('');
 
   if (s.reviews.length === 0) {
