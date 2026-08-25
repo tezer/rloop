@@ -13,7 +13,7 @@ execution ledger under `.superpowers/sdd/2026-08-25-review-providers/`.
 The ones that would mislead a reader of the tasks below:
 
 - **Two mutation checks did not discriminate.** Task 2's domain-tag mutation
-  and Task 3's `spawnError` test both passed with the guard deleted. Task 3's
+  and Task 3's `spawnError` test both passed with the guard deleted. That test
   used a missing *binary*, but `bash -c <missing>` spawns bash successfully and
   exits 127, so the `error` handler never fired; an unspawnable *cwd* is what
   reaches it.
