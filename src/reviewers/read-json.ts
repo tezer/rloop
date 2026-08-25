@@ -22,6 +22,18 @@ export interface ProviderRun {
  * that reads git under a leaked GIT_DIR reviews another repository and says
  * nothing about it.
  */
+// Grace window for draining stdio after 'exit', before settling on whatever
+// arrived — same constant and same reasoning as src/exec.ts. It sits between
+// two failure modes: settle on 'exit' with no drain at all and a chunk still
+// in flight when the event fires is lost — Node documents that stdio streams
+// "might still be open" at 'exit' — while waiting for 'close' instead blocks
+// on every inherited fd, including one a provider backgrounded without
+// redirecting (`some-tool &` with no `>/dev/null`) still holds open. A few
+// hundred milliseconds is ample for the normal case, where the streams are
+// already drained by the time 'exit' fires, and short enough that a held-open
+// pipe cannot stall the run.
+const DRAIN_GRACE_MS = 300;
+
 export function readProviderJson(
   command: string,
   opts: { cwd: string; timeoutMs: number; env?: Record<string, string> },
@@ -35,6 +47,9 @@ export function readProviderJson(
     // function's correctness should lean on silently — guard it directly so
     // a second event is a no-op instead of a second resolve() call.
     let settled = false;
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
 
     const child = spawn('bash', ['-c', command], {
       cwd: opts.cwd,
@@ -64,6 +79,7 @@ export function readProviderJson(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       resolve({
         stdout: out.join('').trim(),
         stderr: err.join('').trim(),
@@ -73,16 +89,36 @@ export function readProviderJson(
       });
     };
 
+    // Settle as soon as BOTH streams have ended, if 'exit' already fired and
+    // is just waiting on the drain — see the grace-timer branch below.
+    let exitedWith: number | null = null;
+    let exitPending = false;
+    const settleIfDrained = () => {
+      if (exitPending && stdoutEnded && stderrEnded) settle(exitedWith, null);
+    };
+    child.stdout.on('end', () => {
+      stdoutEnded = true;
+      settleIfDrained();
+    });
+    child.stderr.on('end', () => {
+      stderrEnded = true;
+      settleIfDrained();
+    });
+
     child.on('error', (e) => settle(null, e));
-    // Resolve on 'exit' — the provider process itself terminating — rather
-    // than 'close'. 'close' does not fire until every inherited stdio fd is
-    // closed, including one held open by a grandchild the provider
-    // backgrounded without redirecting its own output (e.g. `sleep 100 &`
-    // with no `>/dev/null`). That grandchild keeps the pipe open, so 'close'
-    // never comes and a genuinely clean review is reported as `unavailable`
-    // once `timeoutMs` elapses. Whatever stdout/stderr has arrived by 'exit'
-    // is already captured above via the 'data' listeners, which fire as
-    // chunks arrive rather than only once the streams close.
-    child.on('exit', (code) => settle(code, null));
+    // Resolve on a bounded drain after 'exit' — the provider process itself
+    // terminating — rather than raw 'exit' or 'close'. See DRAIN_GRACE_MS
+    // above for why neither is safe alone. Whatever stdout/stderr has
+    // arrived is already captured above via the 'data' listeners, which fire
+    // as chunks arrive rather than only once the streams close.
+    child.on('exit', (code) => {
+      exitedWith = code;
+      if (stdoutEnded && stderrEnded) {
+        settle(code, null);
+        return;
+      }
+      exitPending = true;
+      graceTimer = setTimeout(() => settle(code, null), DRAIN_GRACE_MS);
+    });
   });
 }
