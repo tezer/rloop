@@ -1,5 +1,7 @@
 import type { RloopConfig } from './config.js';
-import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from './forge/types.js';
+import type { PullRequest, ReviewThread } from './forge/types.js';
+import type { Degradation } from './reviewers/collect.js';
+import type { ReviewerReport } from './reviewers/types.js';
 import type { GateRunResult } from './types.js';
 
 export type BlockerCode =
@@ -9,10 +11,12 @@ export type BlockerCode =
   | 'pr_draft'
   | 'gates_not_green'
   | 'sha_mismatch_gates'
+  | 'reviewer_degraded'
   | 'reviewer_no_verdict'
   | 'reviewer_stale'
-  | 'reviewer_changes_requested'
-  | 'reviewer_not_approved'
+  | 'reviewer_unavailable'
+  | 'reviewer_malformed'
+  | 'reviewer_findings_open'
   | 'threads_unresolved';
 
 export interface Blocker {
@@ -24,7 +28,8 @@ export interface MergeGateInput {
   cfg: RloopConfig;
   pr: PullRequest;
   gateRun: GateRunResult;
-  reviews: ReviewVerdict[];
+  reviewerReports: ReviewerReport[];
+  degradation: Degradation | null;
   threads: ReviewThread[];
 }
 
@@ -49,7 +54,7 @@ const short = (sha: string) => sha.slice(0, 7);
  * No review yet is not approval. No gate result is not green.
  */
 export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
-  const { cfg, pr, gateRun, reviews, threads } = input;
+  const { cfg, pr, gateRun, threads } = input;
   const blockers: Blocker[] = [];
 
   if (!cfg.merge.enabled) {
@@ -96,55 +101,64 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
     });
   }
 
-  // Part two: each required reviewer vs PR head.
-  for (const required of cfg.merge.required_reviewers) {
-    const theirs = reviews.filter((r) => matchesReviewer(required, r.author));
+  // Degradation blocks unconditionally. The operator chose: rloop may run
+  // everything else without an external reviewer, but it may not MERGE
+  // without one. A provider that is merely down is indistinguishable at
+  // runtime from one deliberately absent, and merging through the second
+  // silently merges through the first.
+  if (input.degradation) {
+    blockers.push({
+      code: 'reviewer_degraded',
+      message:
+        `External review is degraded (${input.degradation.reason}): ` +
+        `${input.degradation.message} Gates still ran; the merge does not.`,
+    });
+  }
 
-    if (theirs.length === 0) {
-      blockers.push({
-        code: 'reviewer_no_verdict',
-        message: `No review from "${required}" at all. Absence of a verdict is NOT approval.`,
-      });
-      continue;
-    }
-
-    // Latest by submission time; fall back to array order when a review has no
-    // timestamp (pending reviews do not).
-    const latest = theirs.reduce((a, b) =>
-      (b.submittedAt ?? '') >= (a.submittedAt ?? '') ? b : a,
-    );
-
-    if (latest.sha !== pr.headSha) {
-      blockers.push({
-        code: 'reviewer_stale',
-        message:
-          `Latest review from "${required}" is against ${short(latest.sha)}, but PR head is ` +
-          `${short(pr.headSha)}. Stale — re-request review on the current commit.`,
-      });
-      continue;
-    }
-
-    if (latest.state === 'CHANGES_REQUESTED') {
-      blockers.push({
-        code: 'reviewer_changes_requested',
-        message: `"${required}" requested changes on ${short(latest.sha)}.`,
-      });
-      continue;
-    }
-
-    // Under `approved`, a COMMENTED review is not an approval — it is a
-    // reviewer who looked and declined to say yes. Treating those as
-    // interchangeable is what made "the reviewer was happy" mean "the reviewer
-    // turned up".
-    if (cfg.merge.required_reviewer_state === 'approved' && latest.state !== 'APPROVED') {
-      blockers.push({
-        code: 'reviewer_not_approved',
-        message:
-          `"${required}" left a ${latest.state} review on ${short(latest.sha)}, not an ` +
-          `APPROVED one. Config requires required_reviewer_state: approved. ` +
-          `(A reviewer that never approves — Copilot files findings as COMMENTED — ` +
-          `needs "any_verdict" plus require_threads_resolved.)`,
-      });
+  for (const r of input.reviewerReports) {
+    switch (r.status) {
+      case 'clean':
+        break;
+      case 'absent':
+        blockers.push({
+          code: 'reviewer_no_verdict',
+          message: `No review from "${r.name}" at all. Absence of a verdict is NOT approval.`,
+        });
+        break;
+      case 'stale':
+        blockers.push({
+          code: 'reviewer_stale',
+          message:
+            `Latest review from "${r.name}" is against ${short(r.sha ?? '')}, but PR head is ` +
+            `${short(pr.headSha)}. Stale — re-request review on the current commit.`,
+        });
+        break;
+      case 'unavailable':
+        blockers.push({
+          code: 'reviewer_unavailable',
+          message: `Reviewer "${r.name}" could not run: ${r.detail ?? 'no detail'}`,
+        });
+        break;
+      case 'malformed':
+        blockers.push({
+          code: 'reviewer_malformed',
+          message:
+            `Reviewer "${r.name}" ran but its output could not be used: ${r.detail ?? 'no detail'}. ` +
+            `A reviewer you broke is a different problem from one you never had — fix the wrapper.`,
+        });
+        break;
+      case 'findings': {
+        const open = r.findings.filter((f) => !f.dismissed);
+        const sample = open.slice(0, 3).map((f) => `${f.fingerprint} ${f.title}`).join('; ');
+        blockers.push({
+          code: 'reviewer_findings_open',
+          message:
+            `"${r.name}" has open findings${sample ? `: ${sample}` : ''}` +
+            (open.length > 3 ? ` (+${open.length - 3} more)` : '') +
+            (r.detail ? ` — ${r.detail}` : ''),
+        });
+        break;
+      }
     }
   }
 

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig, type RloopConfig } from '../src/config.js';
 import { matchesReviewer, type PullRequest, type ReviewThread, type ReviewVerdict } from '../src/forge/types.js';
 import { evaluateMergeGate, type BlockerCode } from '../src/merge-gate.js';
+import { collectReviewerReports, degradationOf } from '../src/reviewers/collect.js';
+import type { ReviewerReport } from '../src/reviewers/types.js';
 import type { GateRunResult } from '../src/types.js';
 
 const HEAD = 'a'.repeat(40);
@@ -66,20 +68,37 @@ const thread = (over: Partial<ReviewThread> = {}): ReviewThread => ({
 
 const codes = (d: { blockers: { code: BlockerCode }[] }) => d.blockers.map((b) => b.code);
 
+/**
+ * Realistic conversion from raw forge reviews to what `evaluateMergeGate` now
+ * consumes — exactly the wiring `prStatus` in src/pr.ts does. The old tests
+ * below build `reviews:` because that is the input the forge API gives you;
+ * running it through the real `collectReviewerReports` / `degradationOf`
+ * pair (rather than hand-rolling a `ReviewerReport`) keeps those tests
+ * honest about what the pipeline actually produces.
+ */
+async function reviewerInputs(c: RloopConfig, headSha: string, reviews: ReviewVerdict[]) {
+  const reviewerReports = await collectReviewerReports(c, { repoRoot: '.', headSha, reviews });
+  const degradation = degradationOf(reviewerReports, c);
+  return { reviewerReports, degradation };
+}
+
 describe('evaluateMergeGate', () => {
-  it('allows a merge when every condition holds on one SHA', () => {
+  it('allows a merge when every condition holds on one SHA', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [thread()],
     });
     expect(d.blockers).toEqual([]);
     expect(d.allowed).toBe(true);
   });
 
-  it('blocks when merge is disabled — the default posture', () => {
+  it('blocks when merge is disabled — the default posture', async () => {
     const disabled = loadConfig(`
 version: 1
 gates:
@@ -87,138 +106,176 @@ gates:
     run: x
     forbid: ["npm ERR!"]
 `);
+    const { reviewerReports, degradation } = await reviewerInputs(disabled, HEAD, []);
     const d = evaluateMergeGate({
       cfg: disabled,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('merge_disabled');
   });
 
-  it('blocks a base branch that is not on the allowlist', () => {
+  it('blocks a base branch that is not on the allowlist', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr({ baseRef: 'main' }),
       gateRun: greenRun(),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('base_not_allowed');
   });
 
-  it('treats a MISSING review as a blocker, never as approval', () => {
+  it('treats a MISSING review as a blocker, never as approval', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, []); // nobody has reviewed yet
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [], // nobody has reviewed yet
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('reviewer_no_verdict');
     expect(d.allowed).toBe(false);
   });
 
-  it('blocks a review submitted against an older commit', () => {
+  it('blocks a review submitted against an older commit', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review({ sha: OLD })]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [review({ sha: OLD })],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('reviewer_stale');
   });
 
-  it('uses the LATEST review, so an old approval cannot outvote new changes', () => {
+  it('uses the LATEST review, so an old approval cannot outvote new changes', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [
+      review({ state: 'APPROVED', submittedAt: '2026-08-12T09:00:00Z' }),
+      review({ state: 'CHANGES_REQUESTED', submittedAt: '2026-08-12T11:00:00Z' }),
+    ]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [
-        review({ state: 'APPROVED', submittedAt: '2026-08-12T09:00:00Z' }),
-        review({ state: 'CHANGES_REQUESTED', submittedAt: '2026-08-12T11:00:00Z' }),
-      ],
+      reviewerReports,
+      degradation,
       threads: [],
     });
-    expect(codes(d)).toContain('reviewer_changes_requested');
+    // CHANGES_REQUESTED collapses into the reviewer's open-findings status —
+    // there is no separate "changes requested" code any more (see
+    // src/reviewers/collect.ts's forgeReport).
+    expect(codes(d)).toContain('reviewer_findings_open');
   });
 
-  it('matches a reviewer across GitHub’s three login spellings', () => {
+  it('matches a reviewer across GitHub’s three login spellings', async () => {
+    const c = cfg();
     for (const spelling of ['Copilot', 'copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]']) {
+      const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review({ author: spelling })]);
       const d = evaluateMergeGate({
-        cfg: cfg(),
+        cfg: c,
         pr: pr(),
         gateRun: greenRun(),
-        reviews: [review({ author: spelling })],
+        reviewerReports,
+        degradation,
         threads: [],
       });
       expect(codes(d), `spelling: ${spelling}`).not.toContain('reviewer_no_verdict');
     }
   });
 
-  it('blocks when gates ran on a different commit than the PR head', () => {
+  it('blocks when gates ran on a different commit than the PR head', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun({ sha: OLD }),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('sha_mismatch_gates');
   });
 
-  it('blocks a partial gate run even though every selected gate passed', () => {
+  it('blocks a partial gate run even though every selected gate passed', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun({ green: false, partial: true }),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(codes(d)).toContain('gates_not_green');
   });
 
-  it('blocks a void gate run (dirty worktree)', () => {
+  it('blocks a void gate run (dirty worktree)', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun({ green: false, invalidatedBy: 'dirty_worktree' }),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(d.blockers.find((b) => b.code === 'gates_not_green')?.message).toMatch(/dirty_worktree/);
   });
 
-  it('blocks on unresolved threads', () => {
+  it('blocks on unresolved threads', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [thread({ isResolved: true }), thread({ id: 'PRRT_2', isResolved: false })],
     });
     expect(codes(d)).toContain('threads_unresolved');
   });
 
-  it('allows an outdated thread as long as it is resolved', () => {
+  it('allows an outdated thread as long as it is resolved', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [review()],
+      reviewerReports,
+      degradation,
       threads: [thread({ isOutdated: true, isResolved: true })],
     });
     expect(d.allowed).toBe(true);
   });
 
-  it('reports EVERY blocker at once, not just the first', () => {
+  it('reports EVERY blocker at once, not just the first', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, []);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr({ baseRef: 'main', isDraft: true }),
       gateRun: greenRun({ green: false, sha: OLD }),
-      reviews: [],
+      reviewerReports,
+      degradation,
       threads: [thread({ isResolved: false })],
     });
     expect(new Set(codes(d))).toEqual(
@@ -282,52 +339,69 @@ merge:
   required_reviewer_state: approved
 `);
 
-  it('under `approved`, a COMMENTED review blocks', () => {
+  it('under `approved`, a COMMENTED review blocks', async () => {
+    const c = strictCfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [commented]);
     const d = evaluateMergeGate({
-      cfg: strictCfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [commented],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(d.allowed).toBe(false);
-    expect(codes(d)).toContain('reviewer_not_approved');
+    // "not approved" and "changes requested" both collapse into the
+    // reviewer's open-findings status now — see forgeReport in
+    // src/reviewers/collect.ts.
+    expect(codes(d)).toContain('reviewer_findings_open');
   });
 
-  it('under `approved`, an APPROVED review clears it', () => {
+  it('under `approved`, an APPROVED review clears it', async () => {
+    const c = strictCfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [approved]);
     const d = evaluateMergeGate({
-      cfg: strictCfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [approved],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(d.allowed).toBe(true);
   });
 
-  it('under `any_verdict`, a COMMENTED review clears it — the documented trade', () => {
+  it('under `any_verdict`, a COMMENTED review clears it — the documented trade', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [commented]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [commented],
+      reviewerReports,
+      degradation,
       threads: [],
     });
     expect(d.allowed).toBe(true);
   });
 
-  it('CHANGES_REQUESTED still blocks under `any_verdict`, and reports that reason', () => {
+  it('CHANGES_REQUESTED still blocks under `any_verdict`, and reports that reason', async () => {
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [
+      { ...commented, state: 'CHANGES_REQUESTED' },
+    ]);
     const d = evaluateMergeGate({
-      cfg: cfg(),
+      cfg: c,
       pr: pr(),
       gateRun: greenRun(),
-      reviews: [{ ...commented, state: 'CHANGES_REQUESTED' }],
+      reviewerReports,
+      degradation,
       threads: [],
     });
-    const codes = d.blockers.map((b) => b.code);
-    expect(codes).toContain('reviewer_changes_requested');
-    // Not double-reported as "not approved" — one cause, one blocker.
-    expect(codes).not.toContain('reviewer_not_approved');
+    const blockerCodes = d.blockers.map((b) => b.code);
+    expect(blockerCodes).toContain('reviewer_findings_open');
+    // One cause, one blocker — not double-reported.
+    expect(blockerCodes.filter((code) => code === 'reviewer_findings_open')).toHaveLength(1);
   });
 
   it('is REQUIRED when merge is enabled with reviewers — no silent default', () => {
@@ -344,5 +418,110 @@ merge:
   required_reviewers: [copilot-pull-request-reviewer]
 `),
     ).toThrow(/required_reviewer_state/);
+  });
+});
+
+const report = (over: Partial<ReviewerReport> = {}): ReviewerReport => ({
+  name: 'copilot',
+  kind: 'forge',
+  status: 'clean',
+  sha: HEAD,
+  findings: [],
+  detail: null,
+  ...over,
+});
+
+// Named `blockerCodes`, not `codes` — this file already has a top-level
+// `codes` helper with a different signature (it takes an already-evaluated
+// decision, not a partial input).
+const blockerCodes = (over: Partial<Parameters<typeof evaluateMergeGate>[0]> = {}): BlockerCode[] =>
+  evaluateMergeGate({
+    cfg: cfg(),
+    pr: pr(),
+    gateRun: greenRun(),
+    reviewerReports: [report()],
+    degradation: null,
+    threads: [],
+    ...over,
+  }).blockers.map((b) => b.code);
+
+describe('reviewer reports', () => {
+  it('allows a merge when every reviewer is clean', () => {
+    expect(blockerCodes()).toEqual([]);
+  });
+
+  it('blocks on degradation, whatever else is green', () => {
+    expect(
+      blockerCodes({
+        degradation: { reason: 'not_configured', provider: null, message: 'none configured' },
+        reviewerReports: [],
+      }),
+    ).toContain('reviewer_degraded');
+  });
+
+  it('blocks an unavailable reviewer with its own code', () => {
+    expect(blockerCodes({ reviewerReports: [report({ status: 'unavailable', detail: 'ENOENT' })] })).toContain(
+      'reviewer_unavailable',
+    );
+  });
+
+  it('blocks a malformed reviewer separately from an unavailable one', () => {
+    expect(blockerCodes({ reviewerReports: [report({ status: 'malformed', detail: 'bad json' })] })).toContain(
+      'reviewer_malformed',
+    );
+  });
+
+  it('blocks open findings', () => {
+    expect(blockerCodes({ reviewerReports: [report({ status: 'findings' })] })).toContain('reviewer_findings_open');
+  });
+
+  it('blocks a stale reviewer', () => {
+    expect(blockerCodes({ reviewerReports: [report({ status: 'stale', sha: OLD })] })).toContain('reviewer_stale');
+  });
+
+  it('blocks an absent reviewer', () => {
+    expect(blockerCodes({ reviewerReports: [report({ status: 'absent', sha: null })] })).toContain(
+      'reviewer_no_verdict',
+    );
+  });
+
+  it('reports EVERY blocker, not just the first', () => {
+    const c = blockerCodes({
+      pr: pr({ isDraft: true }),
+      reviewerReports: [report({ status: 'unavailable' })],
+    });
+    expect(c).toContain('pr_draft');
+    expect(c).toContain('reviewer_unavailable');
+  });
+
+  it('blocks a merge with zero reviewers configured — the previously-silent hole', () => {
+    // Before this task, `merge.enabled: true` with an empty
+    // required_reviewers list added no blocker at all: evaluateMergeGate
+    // looped over cfg.merge.required_reviewers, and an empty list adds
+    // nothing. collectWarnings() in src/config.ts already told operators
+    // that rloop "will not merge on gates alone" in this situation — this
+    // test is what makes that claim true.
+    const noReviewers = loadConfig(`
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^Route \\\\("]
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+`);
+    expect(noReviewers.reviewers).toEqual([]);
+    const degradation = degradationOf([], noReviewers);
+    const d = evaluateMergeGate({
+      cfg: noReviewers,
+      pr: pr(),
+      gateRun: greenRun(),
+      reviewerReports: [],
+      degradation,
+      threads: [],
+    });
+    expect(d.blockers.map((b) => b.code)).toContain('reviewer_degraded');
+    expect(d.allowed).toBe(false);
   });
 });
