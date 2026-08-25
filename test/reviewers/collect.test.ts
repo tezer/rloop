@@ -1,4 +1,6 @@
-import path from 'node:path';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
@@ -119,6 +121,32 @@ reviewers:
     expect(reports.at(0)!.status).toBe('malformed');
     expect(degradationOf(reports, cfg)?.reason).toBe('malformed');
   });
+
+  it('runs reviewers sequentially, not concurrently', async () => {
+    // Result ORDER would not catch this — Promise.all preserves it. Only
+    // execution overlap distinguishes the two, so the fixtures record when
+    // they start and finish. Under Promise.all the fast reviewer finishes
+    // inside the slow one's 400ms delay and the markers interleave.
+    const log = join(tmpdir(), `rloop-seq-${process.pid}.log`);
+    writeFileSync(log, '');
+    try {
+      const cfg = loadConfig(`${base}
+reviewers:
+  - name: slow
+    kind: command
+    run: RLOOP_MARKER_LOG=${log} node ${join(FIX, 'slow-marker.mjs')}
+  - name: fast
+    kind: command
+    run: RLOOP_MARKER_LOG=${log} node ${join(FIX, 'fast-marker.mjs')}
+`);
+      await collectReviewerReports(cfg, { repoRoot: process.cwd(), headSha: HEAD, reviews: [] });
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+        'slow-start', 'slow-end', 'fast-start', 'fast-end',
+      ]);
+    } finally {
+      rmSync(log, { force: true });
+    }
+  }, 20_000);
 });
 
 describe('degradationOf', () => {
