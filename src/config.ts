@@ -97,12 +97,14 @@ const mergeSchema = z
     require_threads_resolved: z.boolean().default(true),
 
     /**
-     * DEPRECATED — use `reviewers:` (a `kind: forge` entry per login) instead.
-     * This is no longer the mechanism: `loadConfig` desugars each login here
-     * into a `reviewers:` entry (see `desugarDeprecatedReviewers`) and every
-     * consumer reads `cfg.reviewers`, never this field. Kept working, not
-     * because it is current, but because rloop 0.2.1 is published and configs
-     * in the wild set it — see `collectWarnings` for the nag.
+     * DEPRECATED, and kept working deliberately: rloop 0.2.1 is published and
+     * configs in the wild set this. `loadConfig` desugars each login here into
+     * a `kind: forge` `reviewers:` entry (see `desugarDeprecatedReviewers`),
+     * so new code should be written against `reviewers:`.
+     *
+     * Both forms present is a config error rather than a merge — two sources
+     * of truth for who must review is a config whose author cannot predict
+     * what will happen.
      *
      * Original intent, preserved because it still describes what the desugared
      * `reviewers:` entry does: external reviewer logins whose verdict must be
@@ -113,9 +115,11 @@ const mergeSchema = z
     required_reviewers: z.array(z.string().min(1)).default([]),
 
     /**
-     * DEPRECATED — use `reviewers:`'s per-entry `required_state` instead. Like
-     * `required_reviewers` above, this desugars rather than doing anything
-     * itself; see `desugarDeprecatedReviewers`.
+     * DEPRECATED — use `reviewers:`'s per-entry `required_state` instead.
+     * `loadConfig` desugars this into that field (see
+     * `desugarDeprecatedReviewers`) for configs written against `reviewers:`,
+     * but it is not yet vestigial: until every reader of this config is
+     * migrated to `reviewers:`, this field is read directly too.
      *
      * Original intent, preserved as the reasoning behind the two states
      * `reviewers:` entries now carry: this exists because "a review exists"
@@ -278,8 +282,9 @@ export const configSchema = z
     /**
      * External reviewers, forge-native or a local command. Populated after
      * `loadConfig` even when the config only sets the deprecated
-     * `merge.required_reviewers` — see `desugarDeprecatedReviewers`. Consumers
-     * should read this field and never `merge.required_reviewers` directly.
+     * `merge.required_reviewers` — see `desugarDeprecatedReviewers`. New code
+     * should read this field rather than `merge.required_reviewers` directly;
+     * not every existing reader has caught up yet.
      */
     reviewers: z.array(reviewerSchema).default([]),
 
@@ -377,8 +382,8 @@ export function collectWarnings(cfg: RloopConfig): ConfigWarning[] {
     warnings.push({
       message:
         'merge.enabled is true with no reviewers configured: local gates are the only ' +
-        'thing standing between a generated PR and the base branch. rloop will refuse ' +
-        'to merge (reviewer_degraded) rather than proceed on gates alone.',
+        'thing standing between a generated PR and the base branch, and nothing here ' +
+        'blocks the merge on their absence.',
     });
   }
 
@@ -407,11 +412,14 @@ export function loadConfig(yamlText: string, sourcePath = '<config>'): RloopConf
 /**
  * Turn `merge.required_reviewers` into `reviewers:` entries.
  *
- * Runs after validation, so every consumer sees one shape and nothing below
- * this line reads the deprecated keys. They stay on the config object because
- * `collectWarnings` reports them and removing them would be the breaking
- * change this function exists to avoid — rloop 0.2.1 is published, and configs
- * in the wild use them.
+ * Runs after validation, so a config written against `reviewers:` sees one
+ * shape regardless of which form the author used, and nothing below this
+ * line in this file reads the deprecated keys. The deprecated keys are left
+ * on the returned config object rather than cleared — `collectWarnings`
+ * still reports them, and readers that have not yet moved to `reviewers:`
+ * still read them directly. Removing them would be the breaking change this
+ * function exists to avoid: rloop 0.2.1 is published, and configs in the
+ * wild set them.
  */
 function desugarDeprecatedReviewers(cfg: RloopConfig): RloopConfig {
   if (cfg.reviewers.length > 0 || cfg.merge.required_reviewers.length === 0) return cfg;
