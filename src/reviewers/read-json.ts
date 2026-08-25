@@ -32,6 +32,13 @@ export interface ProviderRun {
 // hundred milliseconds is ample for the normal case, where the streams are
 // already drained by the time 'exit' fires, and short enough that a held-open
 // pipe cannot stall the run.
+//
+// UNPINNED, deliberately: deleting this drain leaves the suite green — the
+// truncation it prevents isn't locally reproducible (20MB, 100+ trials on
+// Linux/Node 22, no loss seen). It stays because Node documents stdio as
+// possibly still open at 'exit', and completeness is this function's whole
+// contract; no observed failure is not evidence of safety here. Do not
+// read its presence as evidence anything checks it.
 const DRAIN_GRACE_MS = 300;
 
 export function readProviderJson(
