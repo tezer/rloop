@@ -1,4 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { loadConfig } from '../../src/config.js';
+import type {
+  Forge,
+  MergeOptions,
+  PullRequest,
+  ReviewThread,
+  ReviewVerdict,
+} from '../../src/forge/types.js';
+import { prStatus } from '../../src/pr.js';
 import { formatDegradation, formatPrStatus } from '../../src/report.js';
 import type { Finding, ReviewerReport } from '../../src/reviewers/types.js';
 
@@ -101,5 +110,91 @@ describe('formatPrStatus', () => {
     // being pushed unconditionally left an empty array entry that, joined
     // with '\n', produced two consecutive blank lines.
     expect(out).not.toMatch(/\n\n\n/);
+  });
+});
+
+/**
+ * End-to-end: config -> `prStatus` -> `formatPrStatus`, with a fake `Forge`
+ * standing in for GitHub (the CLI always hits the real one, so nothing else
+ * exercises this full path). Pins the operator-visible string, not
+ * intermediate objects.
+ */
+describe('formatPrStatus — end to end via prStatus', () => {
+  const HEAD = 'c'.repeat(40);
+
+  /** Controls only what `prStatus` reads; every other method is unused here. */
+  class FakeForge implements Forge {
+    async getPullRequest(): Promise<PullRequest> {
+      return {
+        number: 7,
+        baseRef: 'main',
+        headSha: HEAD,
+        state: 'OPEN',
+        isDraft: false,
+        title: 'Add token refresh',
+        url: 'https://example.invalid/pr/7',
+      };
+    }
+    async listReviews(): Promise<ReviewVerdict[]> {
+      return [];
+    }
+    async listReviewThreads(): Promise<ReviewThread[]> {
+      return [];
+    }
+    async requestReviewer(): Promise<string[]> {
+      throw new Error('not used');
+    }
+    async replyToThread(): Promise<string> {
+      throw new Error('not used');
+    }
+    async resolveThread(): Promise<boolean> {
+      throw new Error('not used');
+    }
+    async merge(_number: number, _opts: MergeOptions): Promise<void> {
+      throw new Error('not used');
+    }
+  }
+
+  // `run` points at a fixture that does not exist, so the command reviewer
+  // spawn fails (ENOENT) and the run degrades — see
+  // `collectReviewerReports — command dispatch > an unavailable command
+  // reviewer becomes degradation` in test/reviewers/collect.test.ts for the
+  // same shape isolated at the unit level.
+  const cfg = loadConfig(`
+version: 1
+gates:
+  - name: build
+    run: npm run build
+    require: ["^ok$"]
+merge:
+  enabled: true
+  allowed_base_branches: ["main"]
+reviewers:
+  - name: codex
+    kind: command
+    run: definitely-not-a-real-binary-xyz
+`);
+
+  it('pins the degraded banner, the reviewer name, and the blocked verdict in the rendered output', async () => {
+    // skipGates avoids running real gates (and real `npm run build`) in this
+    // test. That models an explicitly-absent gate run — void, `sha` all
+    // zeros — which on its own blocks the merge for TWO reasons
+    // (gates_not_green and sha_mismatch_gates) independent of the reviewer.
+    // So the assertion below targets `reviewer_degraded` specifically, not
+    // just "blocked", to pin what THIS test actually claims to cover.
+    const status = await prStatus(cfg, {
+      repoRoot: process.cwd(),
+      prNumber: 7,
+      forge: new FakeForge(),
+      skipGates: true,
+    });
+
+    const out = formatPrStatus(status);
+
+    expect(out).toContain('EXTERNAL REVIEW DEGRADED');
+    expect(out).toContain('codex');
+    expect(status.decision.allowed).toBe(false);
+    expect(status.decision.blockers.map((b) => b.code)).toContain('reviewer_degraded');
+    expect(out).toContain('[reviewer_degraded]');
   });
 });

@@ -138,7 +138,7 @@ describe('mcp server', () => {
     expect(resources.map((r) => r.uri)).toContain('rloop://config');
 
     const read = await client.readResource({ uri: 'rloop://config' });
-    const body = JSON.parse(read.contents[0].text as string);
+    const body = JSON.parse((read.contents[0] as { text: string }).text);
     expect(body.config.merge.enabled).toBe(false);
     expect(body.repoRoot).toBe(repo);
   });
@@ -152,7 +152,9 @@ describe('mcp server', () => {
 
   it('serves the pinned config through the template', async () => {
     const uri = `rloop://config${path.join(repo, 'rloop.yaml')}`;
-    const body = JSON.parse((await client.readResource({ uri })).contents[0].text as string);
+    const body = JSON.parse(
+      ((await client.readResource({ uri })).contents[0] as { text: string }).text,
+    );
     expect(body.repoRoot).toBe(repo);
   });
 
