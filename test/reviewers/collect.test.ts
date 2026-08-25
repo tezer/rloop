@@ -107,6 +107,18 @@ reviewers:
     expect(reports.at(0)!.status).toBe('unavailable');
     expect(degradationOf(reports, cfg)?.reason).toBe('unavailable');
   });
+
+  it('a malformed command reviewer becomes degradation, distinctly from unavailable', async () => {
+    // malformed and unavailable both block, and both must arrive here with
+    // their own reason: a reviewer you broke is a different problem from one
+    // you never had, and the operator needs to be told which.
+    const cfg = commandCfg('bad-schema.mjs');
+    const reports = await collectReviewerReports(cfg, {
+      repoRoot: process.cwd(), headSha: HEAD, reviews: [],
+    });
+    expect(reports.at(0)!.status).toBe('malformed');
+    expect(degradationOf(reports, cfg)?.reason).toBe('malformed');
+  });
 });
 
 describe('degradationOf', () => {
