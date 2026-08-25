@@ -76,6 +76,13 @@ describe('runCommandReviewer', () => {
     expect((await go('bad-schema.mjs')).status).toBe('malformed');
   });
 
+  it('reports unavailable, not malformed, when schema-invalid output is paired with a non-zero exit', async () => {
+    // The exit code is the provider's own verdict on whether it ran. rloop
+    // trusts that over the shape of whatever it printed: a non-zero exit
+    // beats a schema failure, same as it beats an unparseable document.
+    expect((await go('bad-schema-exit-1.mjs')).status).toBe('unavailable');
+  });
+
   it('reports stale when the echoed sha is not the head', async () => {
     const r = await go('wrong-sha.mjs');
     expect(r.status).toBe('stale');

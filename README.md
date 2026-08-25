@@ -506,12 +506,17 @@ Order matters — this table is `runCommandReviewer`'s whole contract:
 | Condition | Status |
 |---|---|
 | spawn failed, or timed out | `unavailable` — never ran |
-| stdout unparseable, exit code != 0 | `unavailable` — crashed mid-review |
-| stdout unparseable, exit code == 0 | `malformed` — ran fine, printed junk |
-| parsed, but fails the document schema | `malformed` |
+| output unusable (unparseable OR fails the document schema) AND exit != 0 | `unavailable` — crashed mid-review |
+| output unusable (unparseable OR fails the document schema) AND exit == 0 | `malformed` — ran fine, printed junk |
 | echoed `sha` != head | `stale` |
 | blocking findings present | `findings` |
 | otherwise | `clean` |
+
+The exit code is the provider's own verdict on whether it ran. rloop trusts
+that verdict over the shape of whatever it printed: a non-zero exit wins even
+when the printed JSON is well-formed but fails the schema, and `malformed` is
+reserved for the case where the provider claims success (`exit 0`) and the
+output still cannot be used — parsed or not.
 
 Nothing on this list returns `clean` on a path where the review did not
 actually happen.
@@ -545,7 +550,7 @@ unconditionally — every gate being green is not enough:
 
 | Reason | When |
 |---|---|
-| `not_configured` | `merge.enabled` is true and `reviewers:` is empty |
+| `not_configured` | `reviewers:` is empty — checked unconditionally, not only when `merge.enabled` is true |
 | `unavailable` | any configured reviewer's status is `unavailable` |
 | `malformed` | any configured reviewer's status is `malformed` |
 
@@ -557,8 +562,8 @@ merge does not happen without one.
 ### Blocker codes
 
 Alongside the forge-only codes that already existed —
-`reviewer_changes_requested`, `reviewer_not_approved`, `reviewer_no_verdict`,
-`reviewer_stale` — a `reviewers:` block can now produce:
+`reviewer_changes_requested`, `reviewer_not_approved`, `reviewer_no_verdict`
+— a `reviewers:` block can now produce:
 
 | Code | Means |
 |---|---|
@@ -566,6 +571,12 @@ Alongside the forge-only codes that already existed —
 | `reviewer_unavailable` | a reviewer's status is `unavailable` |
 | `reviewer_malformed` | a reviewer's status is `malformed` |
 | `reviewer_findings_open` | a `kind: command` reviewer has open (non-dismissed) blocking findings |
+
+`reviewer_stale` is not forge-only, even though it predates this feature: a
+`kind: command` reviewer whose echoed `sha` does not match head produces
+`status: stale` exactly like a forge review against an old commit, and both
+land on the same `reviewer_stale` blocker — see the classification table
+above.
 
 ### Deprecated: `merge.required_reviewers` / `merge.required_reviewer_state`
 
