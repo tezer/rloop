@@ -118,7 +118,11 @@ export function formatPrStatus(s: {
   lines.push(
     dim(`  ${s.pr.state}${s.pr.isDraft ? ' (draft)' : ''} · → ${s.pr.baseRef} · head ${head}`),
   );
-  lines.push(formatDegradation(s.degradation ?? null));
+  // Pushed conditionally: `formatDegradation` returns '' when nothing is
+  // degraded, and pushing that unconditionally would still land as a blank
+  // array entry — doubling up with the blank line below it.
+  const banner = formatDegradation(s.degradation ?? null);
+  if (banner) lines.push(banner);
 
   for (const r of s.reviewerReports ?? []) {
     const mark = r.status === 'clean' ? '✓' : r.status === 'findings' ? '✗' : '~';
