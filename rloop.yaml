@@ -1,0 +1,135 @@
+# rloop, gating itself.
+#
+# Until this file existed the tool had no verdict on its own releases: `rloop
+# gate` had nothing to run, and the only alternative was typing
+# `npm test && npx tsc` by hand — the exact false green rloop exists to
+# prevent, and circular besides, since it would use an unproven build as
+# evidence for shipping that build.
+#
+# Every marker below was captured from real output, not guessed. Where a
+# command prints nothing on success, that is stated rather than papered over.
+
+version: 1
+
+forge:
+  provider: github
+  slug: tezer/rloop
+
+committer:
+  name: tezer
+  email: 4751652+tezer@users.noreply.github.com
+
+gates:
+  # ── 1. The suite ────────────────────────────────────────────────────────
+  - name: test
+    run: npx vitest run
+    require:
+      # A FLOOR of 216, not a bare `\d+ passed`.
+      #
+      # The failure this guards is a suite that SHRINKS: a renamed directory,
+      # a broken import in a conftest-equivalent, a glob that stops matching.
+      # vitest exits 0 and prints a cheerful `Tests  50 passed (50)`, which a
+      # bare pattern accepts. Measured 2026-08-25 at 216.
+      #
+      # Anchored at line start with no `failed` alternative on purpose: a red
+      # run prints `Tests  1 failed | 217 passed (218)`, which begins with the
+      # failure count, so this cannot match it even though "passed" appears.
+      #
+      # ⚠️ RAISE THIS when the suite grows — nothing will remind you. It only
+      # catches shrinkage. Lowering it to make a red run green defeats the point.
+      - "^\\s+Tests\\s+(21[6-9]|2[2-9][0-9]|[3-9][0-9]{2}|[0-9]{4,}) passed \\(\\d+\\)$"
+      # The file-level twin. A test FILE that fails to load reports
+      # `Test Files  1 failed | 20 passed (21)` while individual tests may
+      # still tally clean, so the Tests line alone can miss a collection error.
+      - "^\\s+Test Files\\s+\\d+ passed \\(\\d+\\)$"
+    forbid:
+      - "^\\s*FAIL\\s"                    # per-file failure line
+      - "Failed Tests"                    # the `⎯⎯ Failed Tests N ⎯⎯` banner
+      - "^\\s+Tests\\s+\\d+ failed"       # summary line, red form
+      - "^No test files found"            # collected nothing; exit code alone lies
+    timeout_seconds: 600
+
+  # ── 2. Both typecheck configs ───────────────────────────────────────────
+  - name: typecheck
+    # `tsconfig.json` covers src/**; `tsconfig.test.json` covers src + test.
+    # The second exists because test/** was never typechecked until this
+    # release, and turning it on surfaced three real pre-existing errors.
+    #
+    # The trailing `echo` is the positive marker: tsc prints NOTHING on
+    # success, so without it this gate could only ever assert the absence of
+    # failure strings. Be precise about what the marker proves — it proves
+    # both tsc invocations exited 0, because `&&` short-circuits. It does not
+    # inspect their output. The `forbid` below is what reads that.
+    run: npx tsc -p tsconfig.json && npx tsc -p tsconfig.test.json && echo "RLOOP_TYPECHECK_OK src+test"
+    require:
+      - "^RLOOP_TYPECHECK_OK src\\+test$"
+    forbid:
+      - "error TS[0-9]+"
+    timeout_seconds: 300
+
+  # ── 3. The built artifact actually runs ─────────────────────────────────
+  - name: smoke
+    # The only gate that exercises what ships. `typecheck` proves the sources
+    # compile; this proves `dist/` starts, parses a real config, and answers.
+    # It caught nothing during development — it exists for the release where
+    # `dist/` is stale or an entry point is broken, which no unit test sees.
+    run: npm run build && node dist/cli.js check -c examples/next-vitest.yaml
+    require:
+      - "^config OK: .*examples/next-vitest\\.yaml$"
+    forbid:
+      - "invalid config"
+      - "error TS[0-9]+"
+    timeout_seconds: 300
+
+# ── Who must review ───────────────────────────────────────────────────────
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+    # `any_verdict`, not `approved`, and the reason matters: Copilot never
+    # submits APPROVED at all — it files findings as inline comments on a
+    # COMMENTED review. Under `approved` it would block this repo forever.
+    #
+    # Understand what that leans on. `any_verdict` means "the reviewer turned
+    # up", and the real gate on its findings is require_threads_resolved
+    # below. Thread resolution is performed by the same agent being gated, so
+    # this delegates part of the check to a party with an interest in the
+    # answer. That is a known, accepted weakness, not an oversight.
+
+  # A local second opinion, dogfooding this release's own feature. Commented
+  # out because it needs a `codex` binary on PATH; uncomment once you have
+  # one. It must print ONE JSON document on stdout and narrate on stderr.
+  # - name: codex
+  #   kind: command
+  #   run: codex review --base origin/main --json
+  #   timeout_seconds: 900
+
+merge:
+  # DRY RUN, deliberately, and this is the line to change if you disagree.
+  #
+  # `main` is what npm publishes from — `prepublishOnly` builds and tests, but
+  # nothing stops a merge here from becoming a release. Auto-merging to a
+  # publish branch means auto-shipping, which is a different risk from
+  # auto-merging to a staging branch that a human promotes later.
+  #
+  # With this false, the loop still runs end to end and still reaches a real
+  # verdict: gates run, reviewers are collected, every merge condition is
+  # evaluated, and `rloop pr merge` refuses with `merge_disabled` rather than
+  # silently doing nothing. Flip to true when you want the loop to close by
+  # itself.
+  enabled: false
+
+  # ALLOWLIST, never a denylist — a branch nobody remembered to add stays
+  # protected. Populated so that flipping `enabled` above is a one-line change
+  # rather than two, and so the allowlist is reviewed now rather than in a hurry.
+  allowed_base_branches: [main]
+
+  method: squash
+  delete_branch: true
+
+  # The real gate on a comment-only reviewer's findings. See the note under
+  # `required_state` above for what this is carrying.
+  require_threads_resolved: true
+
+  reviewer_timeout_seconds: 900
