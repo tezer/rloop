@@ -46,9 +46,12 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
      it is the single most reliable source of the next round's findings.
    - After changing any claim, **grep for its siblings** — on the *old* wording,
      before you commit: `git grep -nF "<the old number, the old term, the retired idea>"`.
-     `-F` matters: git grep is regex by default, so a retired term holding a
-     `.`, `(` or `+` silently matches the wrong things or nothing at all — a
-     false negative inside the rule that exists to prevent them. The same fact
+     `-F` matters: git grep matches basic regular expressions by default, so a
+     retired term holding a `.`, `*` or `[` is a pattern, not a string —
+     `git grep -n "v1.2"` also reports `v1x2`, and you come away believing you
+     checked. The risk is over-matching rather than silence: `(` and `+` are
+     literals in basic regex, and a malformed pattern errors instead of passing
+     quietly. `-F` removes the question entirely. The same fact
      lives in more places than you remember: a table, a doc comment, a test
      name, a summary line. Change it in one and you have written a
      contradiction, not a fix. This is mechanical, it takes seconds, and it
