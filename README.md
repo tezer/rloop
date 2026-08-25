@@ -960,9 +960,22 @@ If not, add the branch.
 
 ### `pr merge` refuses with `reviewer_stale`
 
-Your reviewer approved an earlier commit and you have pushed since. Re-request
-the review on the current head. Two reviewers agreeing about different versions
-of the code is not agreement.
+The fix depends on which kind of reviewer went stale. The blocker message
+itself doesn't say — check the reviewer's line in `rloop pr status`, which
+prints `name (kind): status` for each configured reviewer.
+
+- **`kind: forge`** — your reviewer approved (or commented on) an earlier
+  commit and you have pushed since. Re-request the review on the current
+  head. Two reviewers agreeing about different versions of the code is not
+  agreement.
+- **`kind: command`** — the provider echoed a `sha` that is not head. There is
+  no review to re-request; the command reviewer only runs as part of
+  `rloop pr status` or `rloop pr merge` (never `rloop gate`, which never
+  invokes reviewers), so re-run one of those against the current commit. If
+  it stays stale on a repeated run against a genuinely current head, the
+  provider is most likely serving a cached result from a previous invocation
+  rather than actually reviewing this one — check whatever caching the
+  command itself does before assuming rloop is wrong.
 
 ### `gh: command not found`, or every `pr` command fails
 
