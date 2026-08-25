@@ -50,6 +50,18 @@ describe('runCommandReviewer', () => {
     expect(r.status).toBe('unavailable');
   });
 
+  it('reports unavailable when the command cannot be SPAWNED at all', async () => {
+    // Distinct from a missing binary, which spawns bash successfully and
+    // exits 127 into the unparseable branch. An unspawnable cwd is the only
+    // way to reach `run.spawnError`.
+    const r = await runCommandReviewer(rev('clean.mjs'), {
+      repoRoot: '/nonexistent-directory-for-rloop-reviewer-test',
+      headSha: HEAD,
+    });
+    expect(r.status).toBe('unavailable');
+    expect(r.detail).toMatch(/could not start/);
+  });
+
   it('reports unavailable when the command crashes without a document', async () => {
     expect((await go('crash.mjs')).status).toBe('unavailable');
   });
