@@ -45,11 +45,14 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
      it. A deletion cannot be wrong. A rewrite is a fresh unverified claim, and
      it is the single most reliable source of the next round's findings.
    - After changing any claim, **grep for its siblings** — on the *old* wording,
-     before you commit: `git grep -n "<the old number, the old term, the retired
-     idea>"`. The same fact lives in more places than you remember: a table, a
-     doc comment, a test name, a summary line. Change it in one and you have
-     written a contradiction, not a fix. This is mechanical, it takes seconds,
-     and it removes more rounds than anything else in this file.
+     before you commit: `git grep -nF "<the old number, the old term, the retired idea>"`.
+     `-F` matters: git grep is regex by default, so a retired term holding a
+     `.`, `(` or `+` silently matches the wrong things or nothing at all — a
+     false negative inside the rule that exists to prevent them. The same fact
+     lives in more places than you remember: a table, a doc comment, a test
+     name, a summary line. Change it in one and you have written a
+     contradiction, not a fix. This is mechanical, it takes seconds, and it
+     removes more rounds than anything else in this file.
    - After a fix kills a mutant, **run the opposite mutation.** A reviewer
      reports the instance they found; the property is usually two-sided
      (added/removed, padded/unpadded, prepended/appended). Patching the
