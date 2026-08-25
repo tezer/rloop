@@ -21,6 +21,13 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
 1. **Trigger every review stream in parallel.** Request the external reviewer
    *and* start your own review passes in the same turn. Do not serialize them.
 
+   Make one pass ask a different question from all the others. Most passes check
+   **citations**: is each claim true, does each reference point where it says it
+   does. One pass must check the **argument**: assuming every citation is
+   correct, does the conclusion follow? A claim can be perfectly sourced and the
+   reasoning built on it still collapse — verification cannot see that, so ask
+   for it by name or you will not get it.
+
 2. **Run the gates.** `gate_run`. A build or test failure is a finding like any
    other, not a separate category of problem.
 
@@ -37,6 +44,18 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
    - If the finding is in a **comment**, prefer deleting the claim to rewording
      it. A deletion cannot be wrong. A rewrite is a fresh unverified claim, and
      it is the single most reliable source of the next round's findings.
+   - After changing any claim, **grep for its siblings** — on the *old* wording,
+     before you commit: `git grep -nF "<the old number, the old term, the retired idea>"`.
+     `-F` matters: git grep matches basic regular expressions by default, so a
+     retired term holding a `.`, `*` or `[` is a pattern, not a string —
+     `git grep -n "v1.2"` also reports `v1x2`, and you come away believing you
+     checked. The risk is over-matching rather than silence: `(` and `+` are
+     literals in basic regex, and a malformed pattern errors instead of passing
+     quietly. `-F` removes the question entirely. The same fact
+     lives in more places than you remember: a table, a doc comment, a test
+     name, a summary line. Change it in one and you have written a
+     contradiction, not a fix. This is mechanical, it takes seconds, and it
+     removes more rounds than anything else in this file.
    - After a fix kills a mutant, **run the opposite mutation.** A reviewer
      reports the instance they found; the property is usually two-sided
      (added/removed, padded/unpadded, prepended/appended). Patching the
@@ -80,6 +99,12 @@ later, and your fix for it is another unverified sentence. Check a comment that
 reaches outside its file with the tool that decides — run the parser, run the
 regex, run the mutation — or delete the claim.
 
+Then check the tool answered the question you were actually asking. A real
+command returning a real number under the wrong noun is still a false sentence,
+and it is the way a *verified* claim ships wrong. Counts drift fastest: before
+you write a number down, ask whether the command would have answered
+differently if the sentence were false. If not, it did not check the sentence.
+
 **"I already checked."** You may be holding a verdict from several tool calls
 ago, with pushes in between. The merge tool re-derives everything for this
 reason. Do not look for a way to skip it.
@@ -89,6 +114,19 @@ reason. Do not look for a way to skip it.
 Track whether each round changed **behaviour** — a non-comment line in shipped
 source. Two consecutive rounds that change none means the artifact is done and
 the loop is now grading your prose against itself.
+
+**Know what your artifact is.** When the deliverable *is* prose — a design
+document, a spec, an ADR — that test reads empty on round one and measures
+nothing. Diff the document instead, and count a round as substantive when it
+changed an argument rather than a wording. Deleting a claim is usually not
+available there either: a design document cannot delete the argument it exists
+to make. A rewrite you cannot avoid is new work, and it does not inherit the
+review that the text it replaced had already passed.
+
+**"Stopped changing" is not "nothing left to find."** The test tells you the
+loop has stopped improving the artifact. It cannot tell you the artifact is
+correct, and it says nothing about defects no pass has looked for yet. If no
+pass has checked the argument, you are not finished — however quiet the diff is.
 
 That is not a licence to merge with known-wrong comments. Sort the remaining
 findings by one question: **believing this, does someone make a wrong change?**
@@ -100,8 +138,8 @@ findings by one question: **believing this, does someone make a wrong change?**
 - *No* — imprecise wording, a stale cross-reference, a claim nobody acts on.
   Delete or leave. It does not earn a round.
 
-Do both in the same commit as the last code fix, then merge. Stop running
-rounds; do not stop fixing.
+Do both in the same commit as the last fix, then merge. Stop running rounds; do
+not stop fixing.
 
 ## When to stop and ask
 
