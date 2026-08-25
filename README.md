@@ -7,7 +7,7 @@ $ rloop pr status 812
 PR #812 Add a retry budget to the job runner
   OPEN · → staging · head 9dbe1e8
 
-  ~ copilot-pull-request-reviewer[bot] APPROVED (stale: a5aab06)
+  ~ copilot-pull-request-reviewer[bot] COMMENTED (stale: a5aab06)
   ✗ threads: 3/4 resolved
 
 BLOCKED — 3 condition(s) not met:

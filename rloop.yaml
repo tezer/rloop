@@ -69,16 +69,52 @@ gates:
 
   # ── 3. The built artifact actually runs ─────────────────────────────────
   - name: smoke
-    # The only gate that exercises what ships. `typecheck` proves the sources
-    # compile; this proves `dist/` starts, parses a real config, and answers.
-    # It caught nothing during development — it exists for the release where
-    # `dist/` is stale or an entry point is broken, which no unit test sees.
-    run: npm run build && node dist/cli.js check -c examples/next-vitest.yaml
+    # `typecheck` proves the sources compile. `test` already runs the built
+    # MCP server (test/bin-symlink.test.ts spawns dist/mcp/server.js through a
+    # node_modules/.bin-style symlink and speaks stdio MCP to it) — that is
+    # also "what ships", exercised before this gate ever runs. What this gate
+    # adds is the OTHER shipped entry point: dist/cli.js, invoked end to end
+    # against a real config file on disk. It caught nothing during
+    # development — it exists for the release where `dist/` is stale or the
+    # CLI entry point is broken, which no unit test sees.
+    #
+    # `check` alone only proves config PARSING — it never calls `runGates`,
+    # the function `gate`, `pr status` and `pr merge` all depend on for a
+    # merge verdict. A break confined to `runGates` would sail through
+    # `check` unnoticed. The block below closes that gap: it builds a
+    # disposable one-gate config inside its own throwaway git repo (never
+    # this repo's rloop.yaml — pointing `gate` at that from inside a gate run
+    # would recurse) and runs `gate --only probe` against it, so this gate
+    # also proves the real `gate` command path — preflight, runGates,
+    # evidence evaluation, exit code — actually works end to end.
+    run: |
+      set -euo pipefail
+      npm run build
+      node dist/cli.js check -c examples/next-vitest.yaml
+      SMOKE_DIR=$(mktemp -d)
+      trap 'rm -rf "$SMOKE_DIR"' EXIT
+      git init -q "$SMOKE_DIR"
+      git -C "$SMOKE_DIR" config user.email smoke@rloop.invalid
+      git -C "$SMOKE_DIR" config user.name "rloop smoke"
+      echo seed > "$SMOKE_DIR/seed.txt"
+      git -C "$SMOKE_DIR" add seed.txt
+      git -C "$SMOKE_DIR" commit -q -m seed
+      cat > "$SMOKE_DIR/rloop.yaml" <<'SMOKE_CFG'
+      version: 1
+      gates:
+        - name: probe
+          run: echo RLOOP_SMOKE_PROBE_OK
+          require:
+            - "RLOOP_SMOKE_PROBE_OK"
+      SMOKE_CFG
+      node dist/cli.js gate -c "$SMOKE_DIR/rloop.yaml" --only probe
     require:
       - "^config OK: .*examples/next-vitest\\.yaml$"
+      - "PARTIAL — 1 selected gate\\(s\\) passed"
     forbid:
       - "invalid config"
       - "error TS[0-9]+"
+      - "^rloop: "
     timeout_seconds: 300
 
 # ── Who must review ───────────────────────────────────────────────────────
