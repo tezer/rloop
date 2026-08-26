@@ -911,24 +911,32 @@ trusting the call:
 
 ```console
 $ rloop pr request-review 1030
-✗ copilot-pull-request-reviewer: the request did not land. A forge reviewer that
-  has already reviewed this PR may refuse to review again — the API answers 200
-  and adds nobody. Dismiss the stale review to un-pin it, or decide on the
-  evidence you have. rloop will not merge past this for you.
+✗ copilot-pull-request-reviewer: the request did not land — the API reported
+  success and added nobody. Retrying will not change that. Check the reviewer is
+  still installed and entitled on this repository; if it is, dismiss any stale
+  review so it stops being the latest verdict, or decide on the evidence you
+  have. rloop will not merge past this for you.
 ```
 
-That output is the honest report of a real limit, observed against GitHub
-Copilot: the REST `pulls/N/requested_reviewers` endpoint never adds the bot, and
-the GraphQL `requestReviews` mutation works exactly **once** — before Copilot
-has filed a review. Afterwards every call reports success and adds nobody, under
-`union:true` and `union:false` alike, and clearing the request set first changes
-nothing. So on a PR that took more than one round there may be no API path to a
-second verdict.
+That output is the honest report of a real failure mode, measured against GitHub
+Copilot on this repository across two days:
 
-rloop cannot fix that from the outside. What it can do is not pretend: `=`
-means that reviewer already reviewed the current head (success), `✓` means the
-request is pending, and `✗` means no retry will help and the next move is
-yours. Exit code is 1 unless every reviewer is `=` or `✓`.
+| When | What happened |
+|---|---|
+| 2026-08-25 | Three requests on PR #4 landed, each followed by a review |
+| 2026-08-26 | Four calls on PR #5 — REST with the bare login, REST with `[bot]`, REST as `Copilot`, and the GraphQL `requestReviews` mutation with the bot's node id and `union: true` — all returned success, and produced no timeline event, no pending request, and no review within five minutes |
+
+Same repo, same account, same calls. So this is not a spelling or an endpoint
+choice, and rloop deliberately does not guess at the cause in its message.
+Whatever it is, it lives on the reviewer's side and rloop cannot fix it from
+here.
+
+What rloop can do is not pretend. `=` means that reviewer already reviewed the
+current head (success), `✓` means the request is pending, `✗` means the call
+reported success and added nobody. Exit code is 1 unless every reviewer is `=`
+or `✓`. **A reviewer that never turns up keeps blocking the merge** — the rule
+that a missing signal is a blocker does not get an exception for a reviewer that
+is broken rather than slow.
 
 ### No tokens
 

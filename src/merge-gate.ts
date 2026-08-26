@@ -47,28 +47,36 @@ export interface MergeDecision {
 const short = (sha: string) => sha.slice(0, 7);
 
 /**
- * What to tell an operator when a forge reviewer will not review again.
+ * What to tell an operator when a review request does not land.
  *
- * Worth spelling out, because "re-request review" sends the reader at an API
- * that answers 200 and does nothing. Observed against GitHub Copilot: the REST
- * `pulls/N/requested_reviewers` endpoint never adds the bot at all, and the
- * GraphQL `requestReviews` mutation works exactly once — before Copilot has
- * filed a review. Afterwards every call reports success and adds nobody, under
- * `union:true` and `union:false` alike, and clearing the request set first
- * changes nothing.
+ * Worth spelling out, because "re-request review" on its own sends the reader
+ * at an API that can answer 200 and do nothing. Observed against GitHub
+ * Copilot, on one repository, across two days:
  *
- * So on a PR that took more than one round — which is most of them — there may
- * be no API path to a second verdict. `rloop pr request-review` reports that
- * honestly instead of pretending, and the remaining moves are the operator's:
- * dismiss the stale review so it stops being the latest one, or decide on the
- * evidence you have. rloop will not merge past this by itself, and should not.
+ *   - 2026-08-25 — three successful requests on PR #4, each followed by a
+ *     review. The `review_requested` events are in the timeline.
+ *   - 2026-08-26 — four attempts on PR #5 (REST with the bare login, REST with
+ *     the `[bot]` suffix, REST as `Copilot`, and the GraphQL `requestReviews`
+ *     mutation with the bot's node id and `union: true`). Every one returned
+ *     success. NONE produced a timeline event, a pending request, or a review
+ *     within five minutes.
+ *
+ * Same repo, same account, same calls. So the cause is not a spelling or an
+ * endpoint choice, and this deliberately does not name one — a first draft of
+ * this string asserted "a reviewer that has already reviewed may refuse to
+ * review again", which PR #5 falsifies: it had no review at all.
+ *
+ * What is known is the observable, and it is enough to act on: the request did
+ * not land, and repeating it is not a plan. The moves left are the operator's.
+ * rloop will not merge past this by itself, and should not.
  *
  * Kept next to the blocker that fires so the two cannot drift apart.
  */
 export const STUCK_REVIEWER_ADVICE =
-  'the request did not land. A forge reviewer that has already reviewed this PR may refuse ' +
-  'to review again — the API answers 200 and adds nobody. Dismiss the stale review to ' +
-  'un-pin it, or decide on the evidence you have. rloop will not merge past this for you.';
+  'the request did not land — the API reported success and added nobody. Retrying will not ' +
+  'change that. Check the reviewer is still installed and entitled on this repository; if it ' +
+  'is, dismiss any stale review so it stops being the latest verdict, or decide on the ' +
+  'evidence you have. rloop will not merge past this for you.';
 
 /**
  * Decide whether a PR may be merged. Pure — no I/O, no clock, no network.

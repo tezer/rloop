@@ -18,11 +18,13 @@ import { HERMETIC_GIT_ENV } from './support/git.js';
  * loop had to leave rloop entirely.
  *
  * The case that makes this worth testing rather than assuming: **the request
- * endpoint answers 200 and adds nobody.** Observed against GitHub Copilot — the
- * REST call never adds the bot, and the GraphQL mutation works once, before
- * Copilot has filed a review, after which every call reports success and adds
- * no one. So the tool MUST read the result back. A version that trusts the call
- * would report success forever on exactly the PRs that are stuck.
+ * endpoint can report success and add nobody.** Measured against GitHub Copilot
+ * on tezer/rloop — requests landed three times on PR #4 on 2026-08-25, and on
+ * 2026-08-26 four different calls on PR #5 (REST bare, REST `[bot]`, REST
+ * `Copilot`, and the GraphQL `requestReviews` mutation) all returned success
+ * and produced no timeline event, no pending request, and no review in five
+ * minutes. So the tool MUST read the result back. A version that trusts the
+ * call would report success forever on exactly the PRs that are stuck.
  *
  * `HEAD_SHA` is what the fake PR reports; `REVIEWED_SHA` is what the fake
  * reviewer has already reviewed. Those being different is the stale case.
@@ -158,10 +160,10 @@ describe('pr_request_review', () => {
   });
 
   /**
-   * The finding this tool exists for. A 200 that adds nobody must not read as
-   * success, and the operator must be told the next move is a decision rather
-   * than another retry — "re-request review" sends them back to the same
-   * endpoint.
+   * The finding this tool exists for. A success response that adds nobody must
+   * not read as success, and the operator must be told the next move is a
+   * decision rather than another retry — "re-request review" on its own sends
+   * them back to the same endpoint.
    */
   it('reports NOT ok when the request silently no-ops, and names the stuck reviewer', async () => {
     forgeState.requestLands = false;
@@ -169,7 +171,7 @@ describe('pr_request_review', () => {
     expect(out.allRequested).toBe(false);
     expect(out.results[0]).toMatchObject({ login: LOGIN, ok: false, moot: false });
     expect(out.stuck).toEqual([LOGIN]);
-    expect(out.advice).toMatch(/answers 200 and adds nobody/);
+    expect(out.advice).toMatch(/reported success and added nobody/);
   });
 
   /**
