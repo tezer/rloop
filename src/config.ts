@@ -150,8 +150,30 @@ const mergeSchema = z
      */
     required_reviewer_state: z.enum(['approved', 'any_verdict']).optional(),
 
-    /** Bound on polling for those verdicts before giving up and surfacing. */
-    reviewer_timeout_seconds: z.number().int().positive().default(600),
+    /**
+     * INERT. Accepted, validated, defaulted — and read by nothing.
+     *
+     * It was specified as a bound on polling for forge verdicts. That polling
+     * was never built: `collectReviewerReports` asks the forge once and returns
+     * `absent` or `stale` immediately, and `pr status` / `pr merge` are
+     * single-shot. `grep -rn reviewer_timeout_seconds src/` finds this line and
+     * no consumer. The previous docstring here described the mechanism as if it
+     * existed, which is worse than the dead key: an operator auditing rloop's
+     * own source was told a knob worked.
+     *
+     * The live reviewer timeout is `reviewers[].timeout_seconds` on `kind:
+     * command` entries, consumed in `reviewers/command.ts`. It is deliberately
+     * NOT accepted on a forge entry, because there is nothing to time out.
+     *
+     * Kept parseable rather than deleted so configs in the wild still load;
+     * `collectWarnings` says it does nothing. Removed in 1.0.
+     *
+     * `.optional()` rather than the `.default(600)` it used to carry: a default
+     * makes "the author set it" and "the author did not" the same value after
+     * parsing, and the warning below has to tell those apart to be worth
+     * printing. Nothing reads the field, so widening it costs nothing.
+     */
+    reviewer_timeout_seconds: z.number().int().positive().optional(),
   })
   .strict()
   .superRefine((merge, ctx) => {
@@ -376,7 +398,27 @@ export function collectWarnings(cfg: RloopConfig): ConfigWarning[] {
       message:
         'merge.required_reviewers / merge.required_reviewer_state are DEPRECATED and will ' +
         'be removed in 1.0. They now desugar into `reviewers:` entries. Move to the ' +
-        '`reviewers:` block, which also accepts `kind: command` local providers.',
+        '`reviewers:` block, which also accepts `kind: command` local providers. ' +
+        // The ordering hazard, stated because the two directions are not
+        // symmetric: 0.3.x accepts BOTH shapes, but every earlier release
+        // hard-rejects `reviewers:` — `.strict()` makes an unknown root key an
+        // error, not a warning, so the gate stops running entirely. rloop.yaml
+        // is normally tracked while the version pin lives in an untracked
+        // .mcp.json, so landing this edit breaks the gate for every colleague
+        // still below 0.3.0, at merge time, with no prior signal to them.
+        'ORDER MATTERS: `reviewers:` requires every consumer to be on rloop >=0.3.0 — ' +
+        'update version pins BEFORE landing this config change. Releases below 0.3.0 ' +
+        'reject the `reviewers:` key outright rather than warning.',
+    });
+  }
+
+  if (cfg.merge.reviewer_timeout_seconds !== undefined) {
+    warnings.push({
+      message:
+        'merge.reviewer_timeout_seconds does NOTHING. It is parsed and validated, and no ' +
+        'code reads it: the forge-verdict polling it was meant to bound was never built, ' +
+        'and rloop asks the forge once. Delete the key. If you wanted a reviewer timeout, ' +
+        'the live one is `reviewers[].timeout_seconds` on a `kind: command` entry.',
     });
   }
 

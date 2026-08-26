@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -8,7 +9,8 @@ import { collectWarnings, loadConfig, type RloopConfig } from './config.js';
 import type { Forge } from './forge/types.js';
 import { runGates, unknownGateNames } from './gate.js';
 import { changedPaths } from './git.js';
-import { forgeFor, mergeIfAllowed, prStatus } from './pr.js';
+import { STUCK_REVIEWER_ADVICE } from './merge-gate.js';
+import { forgeFor, mergeIfAllowed, prStatus, requestReviewerVerified } from './pr.js';
 import { runPreflight } from './preflight.js';
 import { formatPreflight, formatPrStatus, formatRun, formatWarnings } from './report.js';
 import { replyAndResolve, unresolvedThreads } from './threads.js';
@@ -27,6 +29,15 @@ const EXIT = { pass: 0, fail: 1, unresolved: 2 } as const;
 
 const CONFIG_NAMES = ['rloop.yaml', 'rloop.yml', '.rloop.yaml', '.rloop.yml'];
 
+/**
+ * Read from package.json rather than hardcoded, so it cannot drift from what
+ * npm actually shipped. The MCP server already does this; a pinned version is
+ * load-bearing (`.mcp.json` pins an exact package, config shapes are
+ * version-gated) and a binary that cannot state its own version leaves the
+ * operator inferring it from which warnings happen to appear.
+ */
+const PACKAGE_VERSION: string = createRequire(import.meta.url)('../package.json').version;
+
 const USAGE = `rloop — evidence-based merge gate
 
 Usage:
@@ -35,6 +46,9 @@ Usage:
   rloop gate                  Run preflight, then the gates. Prints a verdict.
 
   rloop pr status <N>         Evaluate every merge condition. Read-only.
+  rloop pr request-review <N> Ask every configured forge reviewer to review the
+                              current head, and verify the request landed.
+                              This is the way out of \`reviewer_stale\`.
   rloop pr threads <N>        List review threads and their resolved state.
   rloop pr reply <N>          Reply to a thread, then resolve it. Never one
                               without the other. Needs --thread and --body.
@@ -55,6 +69,7 @@ Options:
                         gates. Always BLOCKED — "I didn't check" is not "green".
       --thread <id>     pr reply: GraphQL thread id from \`rloop pr threads\`.
       --body <text>     pr reply: the reply text. Required, non-empty.
+  -V, --version         Print the rloop version and exit.
   -h, --help            This.
 
 Exit: 0 pass · 1 gate failed · 2 no verdict (config/preflight/timeout/void)
@@ -91,6 +106,8 @@ async function load(explicit: string | undefined): Promise<{
   return { cfg, configPath };
 }
 
+const short = (sha: string) => sha.slice(0, 7);
+
 function emitJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -111,8 +128,10 @@ async function runPrCommand({ cfg, repoRoot, positionals, flags }: PrCommandArgs
   const sub = positionals[1];
   const prNumber = Number(positionals[2]);
 
-  if (!['status', 'threads', 'reply', 'merge'].includes(sub ?? '')) {
-    process.stderr.write(`rloop pr: expected status|threads|reply|merge, got "${sub ?? ''}"\n`);
+  if (!['status', 'threads', 'reply', 'merge', 'request-review'].includes(sub ?? '')) {
+    process.stderr.write(
+      `rloop pr: expected status|threads|reply|merge|request-review, got "${sub ?? ''}"\n`,
+    );
     return EXIT.unresolved;
   }
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
@@ -126,6 +145,42 @@ async function runPrCommand({ cfg, repoRoot, positionals, flags }: PrCommandArgs
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`);
     return EXIT.unresolved;
+  }
+
+  if (sub === 'request-review') {
+    const logins = cfg.reviewers.filter((r) => r.kind === 'forge').map((r) => r.login);
+    if (logins.length === 0) {
+      process.stderr.write(
+        'no `kind: forge` reviewers configured, so there is nobody to request. ' +
+          'A `kind: command` reviewer is re-run by `rloop pr status`, not requested.\n',
+      );
+      return EXIT.unresolved;
+    }
+
+    const pr = await forge.getPullRequest(prNumber);
+    const results = [];
+    for (const login of logins) {
+      const res = await requestReviewerVerified(cfg, {
+        prNumber,
+        login,
+        headSha: pr.headSha,
+        forge,
+      });
+      results.push({ login, ...res });
+    }
+
+    if (flags.json) emitJson({ headSha: pr.headSha, results });
+    else {
+      for (const r of results) {
+        if (r.moot) process.stdout.write(`= ${r.login}: already reviewed ${short(pr.headSha)}\n`);
+        else if (r.ok) process.stdout.write(`✓ ${r.login}: request pending\n`);
+        else process.stderr.write(`✗ ${r.login}: ${STUCK_REVIEWER_ADVICE}\n`);
+      }
+    }
+    // Anything short of "landed or moot" is a failure. The endpoint answers 200
+    // and adds nobody, so an unchecked call here is the exact shape of bug
+    // `requestReviewerVerified` exists to catch — do not soften it to 0.
+    return results.every((r) => r.ok) ? EXIT.pass : EXIT.fail;
   }
 
   if (sub === 'threads') {
@@ -208,6 +263,7 @@ export async function main(argv: string[]): Promise<number> {
         'skip-gates': { type: 'boolean', default: false },
         thread: { type: 'string' },
         body: { type: 'string' },
+        version: { type: 'boolean', short: 'V', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
     });
@@ -217,11 +273,33 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const { values: flags, positionals } = parsed;
-  const command = positionals[0] ?? 'gate';
+  const command = positionals[0];
+
+  if (flags.version || command === 'version') {
+    process.stdout.write(`${PACKAGE_VERSION}\n`);
+    return EXIT.pass;
+  }
 
   if (flags.help || command === 'help') {
     process.stdout.write(USAGE);
     return EXIT.pass;
+  }
+
+  /**
+   * No subcommand is NOT `gate`.
+   *
+   * It used to be, and that is a bad default for this tool specifically: `gate`
+   * runs arbitrary commands out of the config, and `-C` defaults to the CONFIG
+   * FILE's directory rather than the cwd — so a bare `rloop` typed in the wrong
+   * shell does real, slow work against a tree the operator was not thinking
+   * about. Reported after exactly that: a bare invocation expecting usage text
+   * spent 208 seconds building a shared checkout other agents were using.
+   *
+   * `check` would be the safe default if one were wanted. Nothing needs one.
+   */
+  if (!command) {
+    process.stderr.write(USAGE);
+    return EXIT.unresolved;
   }
 
   if (!['check', 'preflight', 'gate', 'pr'].includes(command)) {
@@ -338,6 +416,15 @@ main(process.argv.slice(2))
     process.exitCode = code;
   })
   .catch((err) => {
-    process.stderr.write(`rloop: ${(err as Error).stack ?? String(err)}\n`);
+    // Message, not stack. A stack here reads as a crash even when the cause is
+    // an ordinary operator state the code words carefully (a repo with no
+    // commits, say), and the frames are rloop's internals either way. The stack
+    // is still one env var away for anyone actually debugging rloop.
+    const e = err as Error;
+    process.stderr.write(
+      process.env.RLOOP_DEBUG
+        ? `rloop: ${e.stack ?? String(err)}\n`
+        : `rloop: ${e.message ?? String(err)}\n  (set RLOOP_DEBUG=1 for a stack trace)\n`,
+    );
     process.exitCode = EXIT.unresolved;
   });

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { HERMETIC_GIT_ENV } from './support/git.js';
 
 /**
  * Exercises the MCP `pr_status` tool's `degraded` field end to end.
@@ -92,13 +93,7 @@ reviewers:
 `,
   );
   writeFileSync(path.join(dir, 'seed.txt'), 'seed');
-  const env = {
-    ...process.env,
-    GIT_AUTHOR_NAME: 't',
-    GIT_AUTHOR_EMAIL: 't@e',
-    GIT_COMMITTER_NAME: 't',
-    GIT_COMMITTER_EMAIL: 't@e',
-  };
+  const env = { ...process.env, ...HERMETIC_GIT_ENV };
   for (const args of [['init', '-q'], ['add', '-A'], ['commit', '-qm', 'init']]) {
     execFileSync('git', args, { cwd: dir, stdio: 'pipe', env });
   }

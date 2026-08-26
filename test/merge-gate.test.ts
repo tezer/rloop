@@ -648,10 +648,16 @@ describe('reviewer reports', () => {
     expect(blockerCodes({ reviewerReports: [report({ status: 'stale', sha: OLD })] })).toContain('reviewer_stale');
   });
 
-  it('tells a forge reviewer to re-request review, and a command reviewer to re-run instead', () => {
-    // "re-request review on the current commit" is meaningless for a
-    // `kind: command` reviewer — there is no review to re-request, only a
-    // re-run. The advice must branch on kind.
+  it('names the command that exits a stale forge reviewer, and tells a command reviewer to re-run', () => {
+    // Two properties, and the second is why the first is worded as it is.
+    //
+    // The advice must branch on kind: "re-request review" is meaningless for a
+    // `kind: command` reviewer — there is no review to request, only a re-run.
+    //
+    // And for a forge reviewer it must name a command that EXISTS. It used to
+    // say "re-request review on the current commit", which sent the reader at
+    // an API that answers 200 and adds nobody, with no rloop command to run.
+    // Asserting the runnable form pins the message to a real escape.
     const forgeStale = evaluateMergeGate({
       cfg: cfg(),
       pr: pr(),
@@ -660,7 +666,9 @@ describe('reviewer reports', () => {
       degradation: null,
       threads: [],
     }).blockers.find((b) => b.code === 'reviewer_stale');
-    expect(forgeStale?.message).toContain('re-request review');
+    // The PR number is interpolated, so this is copy-pasteable rather than a
+    // shape the reader still has to fill in.
+    expect(forgeStale?.message).toContain(`rloop pr request-review ${pr().number}`);
 
     const commandStale = evaluateMergeGate({
       cfg: cfg(),
@@ -670,7 +678,7 @@ describe('reviewer reports', () => {
       degradation: null,
       threads: [],
     }).blockers.find((b) => b.code === 'reviewer_stale');
-    expect(commandStale?.message).not.toContain('re-request review');
+    expect(commandStale?.message).not.toContain('request-review');
     expect(commandStale?.message).toContain('re-run');
   });
 

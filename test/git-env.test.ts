@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { runCommand } from '../src/exec.js';
 import { assertRepoRoot, headSha, isDirty } from '../src/git.js';
+import { HERMETIC_GIT_ENV } from './support/git.js';
 
 /**
  * `GIT_DIR` outranks `cwd`. With it exported, `git -C /repo/a rev-parse HEAD`
@@ -26,7 +27,10 @@ function git(args: string[], cwd: string, env?: Record<string, string>) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: env ? { ...process.env, ...env } : process.env,
+    // A case's own env spreads LAST on purpose: the payload in this file is a
+    // deliberately-set GIT_CONFIG_* variable, and the isolation defaults must
+    // not be the thing that silences it.
+    env: { ...process.env, ...HERMETIC_GIT_ENV, ...(env ?? {}) },
   }).trim();
 }
 
@@ -236,6 +240,42 @@ describe('assertRepoRoot', () => {
     const plain = mkdtempSync(path.join(tmpdir(), 'rloop-norepo-'));
     try {
       await expect(assertRepoRoot(plain)).rejects.toThrow(/not a git repository|repo root mismatch/);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('headSha in a repo with no commits', () => {
+  /**
+   * A fresh `git init` is a legitimate state, and reaching it should not look
+   * like a crash. Left alone, git's "fatal: ambiguous argument 'HEAD'" escapes
+   * as a raw Node stack trace out of the CLI's top-level catch — right exit
+   * code, wrong genre, and the one message in the tool that tells the operator
+   * nothing about what to do.
+   *
+   * Both halves are asserted: the new sentence is present AND git's own text is
+   * gone. Without the second, a "fix" that merely prefixes the raw error passes.
+   */
+  it('says there are no commits yet, and does not leak git wording', async () => {
+    const empty = mkdtempSync(path.join(tmpdir(), 'rloop-empty-'));
+    try {
+      git(['init', '-q', '.'], empty);
+      await expect(headSha(empty)).rejects.toThrow(/no commits yet/);
+      await expect(headSha(empty)).rejects.not.toThrow(/ambiguous argument/);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The guard must not swallow unrelated git failures into a misleading
+   * "no commits yet" — that would turn a real problem into a wrong instruction.
+   */
+  it('does not claim "no commits" for a directory that is not a repo', async () => {
+    const plain = mkdtempSync(path.join(tmpdir(), 'rloop-nogit-'));
+    try {
+      await expect(headSha(plain)).rejects.not.toThrow(/no commits yet/);
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }

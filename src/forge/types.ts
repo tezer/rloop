@@ -71,7 +71,11 @@ export interface Forge {
  * author comes back without it, and `requested_reviewers[].login` uses a third,
  * bare form. Comparing raw strings therefore reports "no verdict" for a review
  * that plainly exists — and "no verdict" blocks a merge, so the failure is at
- * least safe. It is still wrong, and it wastes a polling window.
+ * least safe. It is still wrong: it blocks a PR whose reviewer already spoke.
+ *
+ * This used to end "it wastes a polling window". There is no polling window —
+ * rloop asks the forge once. See `merge.reviewer_timeout_seconds` in config.ts
+ * for the rest of that fiction.
  */
 const ALIASES: readonly (readonly string[])[] = [['copilot', 'copilot-pull-request-reviewer']];
 

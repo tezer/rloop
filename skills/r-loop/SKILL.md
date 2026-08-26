@@ -68,6 +68,7 @@ the failure; never treat silence as approval.
 | See where the PR stands | `pr_status` |
 | Know if the environment can even render a verdict | `preflight` |
 | Prove the build and tests | `gate_run` |
+| Ask the reviewer to look again after a push | `pr_request_review` |
 | List review threads | `pr_threads` |
 | Answer a thread | `pr_reply_and_resolve` |
 | Merge | `pr_merge` |
@@ -93,6 +94,12 @@ These refusals are the point of the tool, not obstacles to route around:
   or work around the gate.
 - **`preflight` blocks.** That is an operator problem (a service down, wrong
   committer identity). Surface it; do not proceed.
+- **`pr_request_review` reports `ok: false`.** The request did not land. A forge
+  reviewer that has already reviewed this PR may refuse to review again, and the
+  API answers 200 either way — which is why the tool reads the result back
+  instead of trusting it. Retrying will not change the answer. Stop and hand it
+  to the operator with the reviewer named. `moot: true` is the opposite case and
+  is success: that reviewer has already reviewed the current head.
 
 ## If the MCP server is not connected
 
@@ -103,6 +110,7 @@ Fall back to the CLI — same core, same rules:
 | `preflight` | `rloop preflight` |
 | `gate_run` | `rloop gate` |
 | `pr_status` | `rloop pr status <N>` |
+| `pr_request_review` | `rloop pr request-review <N>` |
 | `pr_threads` | `rloop pr threads <N>` |
 | `pr_reply_and_resolve` | `rloop pr reply <N> --thread <id> --body "..."` |
 | `pr_merge` | `rloop pr merge <N>` |

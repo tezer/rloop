@@ -24,12 +24,12 @@ gates:
   - name: test
     run: npx vitest run
     require:
-      # A FLOOR of 216, not a bare `\d+ passed`.
+      # A FLOOR of 239, not a bare `\d+ passed`.
       #
       # The failure this guards is a suite that SHRINKS: a renamed directory,
       # a broken import in a conftest-equivalent, a glob that stops matching.
       # vitest exits 0 and prints a cheerful `Tests  50 passed (50)`, which a
-      # bare pattern accepts. Measured 2026-08-25 at 216.
+      # bare pattern accepts. Measured 2026-08-26 at 239.
       #
       # Anchored at line start with no `failed` alternative on purpose: a red
       # run prints `Tests  1 failed | 217 passed (218)`, which begins with the
@@ -37,7 +37,7 @@ gates:
       #
       # ⚠️ RAISE THIS when the suite grows — nothing will remind you. It only
       # catches shrinkage. Lowering it to make a red run green defeats the point.
-      - "^\\s+Tests\\s+(21[6-9]|2[2-9][0-9]|[3-9][0-9]{2}|[0-9]{4,}) passed \\(\\d+\\)$"
+      - "^\\s+Tests\\s+(239|2[4-9][0-9]|[3-9][0-9]{2}|[0-9]{4,}) passed \\(\\d+\\)$"
       # The file-level twin. A test FILE that fails to load reports
       # `Test Files  1 failed | 20 passed (21)` while individual tests may
       # still tally clean, so the Tests line alone can miss a collection error.
@@ -93,6 +93,18 @@ gates:
       node dist/cli.js check -c examples/next-vitest.yaml
       SMOKE_DIR=$(mktemp -d)
       trap 'rm -rf "$SMOKE_DIR"' EXIT
+      # Isolate the throwaway repo from whatever is in the developer's
+      # gitconfig. Observed: `commit.gpgsign = true` with a signing agent that
+      # is not running fails `git commit` with "failed to write commit object",
+      # so this gate went red on a machine where nothing was wrong with rloop.
+      # A missing config file reads as empty config, which is the intent.
+      #
+      # Note the direction. src/git.ts UNSETS these so a leaked value cannot
+      # redirect rloop's own reads; here they are SET, so a fixture cannot
+      # inherit the operator's. Setting them inside the script is what makes
+      # that possible — the scrub applies when rloop spawns this gate, not to
+      # what the gate exports afterwards.
+      export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
       git init -q "$SMOKE_DIR"
       git -C "$SMOKE_DIR" config user.email smoke@rloop.invalid
       git -C "$SMOKE_DIR" config user.name "rloop smoke"
@@ -169,4 +181,7 @@ merge:
   # `required_state` above for what this is carrying.
   require_threads_resolved: true
 
-  reviewer_timeout_seconds: 900
+  # `reviewer_timeout_seconds: 900` used to sit here. It was inert — parsed,
+  # validated, and read by nothing, because the forge-verdict polling it was
+  # meant to bound was never built. `rloop check` now warns about it, so leaving
+  # it would mean rloop's own config trips rloop's own warning.

@@ -13,7 +13,8 @@ import { collectWarnings } from '../config.js';
 import { runGates } from '../gate.js';
 import { changedPaths } from '../git.js';
 import { locateForServer, type LocatedConfig } from '../locate.js';
-import { forgeFor, mergeIfAllowed, prStatus } from '../pr.js';
+import { STUCK_REVIEWER_ADVICE } from '../merge-gate.js';
+import { forgeFor, mergeIfAllowed, prStatus, requestReviewerVerified } from '../pr.js';
 import { runPreflight } from '../preflight.js';
 import { replyAndResolve } from '../threads.js';
 
@@ -253,6 +254,65 @@ export function createServer(): McpServer {
   );
 
   // ── writes ───────────────────────────────────────────────────────────────────
+
+  /**
+   * The way out of `reviewer_stale` — and the reason the loop prompt can say
+   * "re-request the external reviewer" and mean a tool call.
+   *
+   * Without this the loop leaves rloop on every single fix-and-push cycle: the
+   * merge gate voids the old verdict (correctly), tells the operator to
+   * re-request, and offers nothing that does it. The forge alias normalisation
+   * this needs already lives in `forge/types.ts`.
+   *
+   * It reports failure rather than papering over it. See STUCK_REVIEWER_ADVICE.
+   */
+  server.registerTool(
+    'pr_request_review',
+    {
+      title: 'Request a review at the current head, and verify it landed',
+      description:
+        'Ask every configured `kind: forge` reviewer to review the PR head, then READ BACK ' +
+        'whether the request actually landed — the endpoint answers 200 without adding the ' +
+        'reviewer, so an unchecked call is indistinguishable from a slow reviewer ten minutes ' +
+        'later. Call this after every push. `moot: true` means that reviewer has already ' +
+        'reviewed the current head, which is success. `ok: false` means the reviewer will not ' +
+        'review again and the next move is an operator decision, not a retry.',
+      inputSchema: { ...projectArgs, pr: z.number().int().positive() },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async ({ pr, configPath, repoRoot }) => {
+      try {
+        const { cfg } = await ctx({ configPath, repoRoot });
+        const forge = forgeFor(cfg);
+        const logins = cfg.reviewers.filter((r) => r.kind === 'forge').map((r) => r.login);
+        if (logins.length === 0) {
+          return fail(
+            new Error(
+              'no `kind: forge` reviewers configured, so there is nobody to request. A ' +
+                '`kind: command` reviewer is re-run by pr_status, not requested.',
+            ),
+          );
+        }
+        const { headSha } = await forge.getPullRequest(pr);
+        const results = [];
+        for (const login of logins) {
+          results.push({
+            login,
+            ...(await requestReviewerVerified(cfg, { prNumber: pr, login, headSha, forge })),
+          });
+        }
+        const stuck = results.filter((r) => !r.ok).map((r) => r.login);
+        return ok({
+          headSha,
+          results,
+          allRequested: stuck.length === 0,
+          ...(stuck.length ? { stuck, advice: STUCK_REVIEWER_ADVICE } : {}),
+        });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
 
   server.registerTool(
     'pr_reply_and_resolve',

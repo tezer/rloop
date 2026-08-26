@@ -47,6 +47,38 @@ export interface MergeDecision {
 const short = (sha: string) => sha.slice(0, 7);
 
 /**
+ * What to tell an operator when a review request does not land.
+ *
+ * Worth spelling out, because "re-request review" on its own sends the reader
+ * at an API that can answer 200 and do nothing. Observed against GitHub
+ * Copilot, on one repository, across two days:
+ *
+ *   - 2026-08-25 — three successful requests on PR #4, each followed by a
+ *     review. The `review_requested` events are in the timeline.
+ *   - 2026-08-26 — four attempts on PR #5 (REST with the bare login, REST with
+ *     the `[bot]` suffix, REST as `Copilot`, and the GraphQL `requestReviews`
+ *     mutation with the bot's node id and `union: true`). Every one returned
+ *     success. NONE produced a timeline event, a pending request, or a review
+ *     within five minutes.
+ *
+ * Same repo, same account, same calls. So the cause is not a spelling or an
+ * endpoint choice, and this deliberately does not name one — a first draft of
+ * this string asserted "a reviewer that has already reviewed may refuse to
+ * review again", which PR #5 falsifies: it had no review at all.
+ *
+ * What is known is the observable, and it is enough to act on: the request did
+ * not land, and repeating it is not a plan. The moves left are the operator's.
+ * rloop will not merge past this by itself, and should not.
+ *
+ * Kept next to the blocker that fires so the two cannot drift apart.
+ */
+export const STUCK_REVIEWER_ADVICE =
+  'the request did not land — the API reported success and added nobody. Retrying will not ' +
+  'change that. Check the reviewer is still installed and entitled on this repository; if it ' +
+  'is, dismiss any stale review so it stops being the latest verdict, or decide on the ' +
+  'evidence you have. rloop will not merge past this for you.';
+
+/**
  * Decide whether a PR may be merged. Pure — no I/O, no clock, no network.
  *
  * Every condition is evaluated and reported, rather than short-circuiting on
@@ -149,7 +181,9 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         // it, as the README's troubleshooting section already does.
         const advice =
           r.kind === 'forge'
-            ? 're-request review on the current commit'
+            ? `run \`rloop pr request-review ${pr.number}\`. If it reports the request did not ` +
+              'land, this reviewer will not review again and the way out is an operator ' +
+              'decision, not a retry'
             : 're-run the reviewer against the current commit';
         blockers.push({
           code: 'reviewer_stale',
@@ -217,8 +251,8 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
           blockers.push({
             code: 'reviewer_changes_requested',
             message:
-              `"${r.name}" requested changes${detailSuffix}. Address the requested changes ` +
-              `and re-request review.`,
+              `"${r.name}" requested changes${detailSuffix}. Address them, push, then run ` +
+              `\`rloop pr request-review ${pr.number}\`.`,
           });
         } else if (r.findingsReason === 'not_approved') {
           const reviewerCfg = cfg.reviewers.find((rv) => rv.name === r.name);

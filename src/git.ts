@@ -109,8 +109,26 @@ export async function assertRepoRoot(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * The commit every verdict in a run is bound to.
+ *
+ * A fresh `git init` is a legitimate state and reaching it should not look like
+ * a crash. Left alone, git's "ambiguous argument 'HEAD'" propagates out of
+ * `main`'s catch as a raw Node stack trace — right exit code, wrong genre, and
+ * the one message in the tool that does not tell the operator what to do.
+ */
 export async function headSha(cwd: string): Promise<string> {
-  return git(['rev-parse', 'HEAD'], cwd);
+  try {
+    return await git(['rev-parse', 'HEAD'], cwd);
+  } catch (err) {
+    if (/unknown revision|ambiguous argument 'HEAD'/.test(String((err as Error).message))) {
+      throw new Error(
+        `no commits yet in ${cwd} — rloop needs a HEAD to bind a verdict to. ` +
+          'Make the first commit, then re-run.',
+      );
+    }
+    throw err;
+  }
 }
 
 /**

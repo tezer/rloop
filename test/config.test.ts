@@ -274,4 +274,78 @@ merge:
 `);
     expect(collectWarnings(cfg).some((w) => /deprecated/i.test(w.message))).toBe(true);
   });
+
+  /**
+   * The upgrade is not symmetric, and the warning has to say so.
+   *
+   * 0.3.x accepts both shapes, but every earlier release hard-REJECTS
+   * `reviewers:` — `.strict()` makes an unknown root key an error, so the gate
+   * stops running rather than warning. Meanwhile rloop.yaml is normally tracked
+   * and the version pin lives in an untracked .mcp.json. So an author who reads
+   * "move to the `reviewers:` block" and commits it breaks the gate for every
+   * colleague still below 0.3.0, at merge time, with no prior signal to them.
+   *
+   * Asserted as the two facts a reader has to come away with — the floor and
+   * the ordering — rather than the exact sentence, so rewording is free and
+   * dropping either half is not.
+   */
+  it('tells the migrating author to update version pins BEFORE landing the config change', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  required_reviewers: [copilot-pull-request-reviewer]
+  required_reviewer_state: any_verdict
+`);
+    const dep = collectWarnings(cfg).find((w) => /deprecated/i.test(w.message));
+    expect(dep?.message).toMatch(/0\.3\.0/);
+    expect(dep?.message).toMatch(/before/i);
+  });
+
+  /**
+   * `merge.reviewer_timeout_seconds` parses, validates, and is read by NOTHING:
+   * the forge-verdict polling it was meant to bound was never built, and
+   * `grep -rn reviewer_timeout_seconds src/` finds only the schema line. It is
+   * kept parseable so configs in the wild still load, which means a warning is
+   * the only signal an author can get. Silently accepting an inert knob is the
+   * one option that misleads.
+   */
+  it('warns that merge.reviewer_timeout_seconds does nothing', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+  reviewer_timeout_seconds: 900
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+`);
+    expect(
+      collectWarnings(cfg).some((w) => /reviewer_timeout_seconds does NOTHING/.test(w.message)),
+    ).toBe(true);
+  });
+
+  /**
+   * The other half. The warning must key off the author having WRITTEN the key,
+   * not off its presence after parsing — which is why the field is `.optional()`
+   * rather than the `.default(600)` it used to carry. Restore the default and
+   * this fires on every config that never mentioned it.
+   */
+  it('stays quiet about reviewer_timeout_seconds when the config omits it', () => {
+    const cfg = loadConfig(`${base}
+merge:
+  enabled: true
+  allowed_base_branches: [staging]
+reviewers:
+  - name: copilot
+    kind: forge
+    login: copilot-pull-request-reviewer
+    required_state: any_verdict
+`);
+    expect(collectWarnings(cfg).some((w) => /reviewer_timeout_seconds/.test(w.message))).toBe(
+      false,
+    );
+  });
 });

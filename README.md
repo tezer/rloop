@@ -13,8 +13,11 @@ PR #812 Add a retry budget to the job runner
 BLOCKED — 3 condition(s) not met:
   ✗ [gates_not_green]     Local gates are not green: test failed.
   ✗ [reviewer_stale]      Latest review from "copilot-pull-request-reviewer" is
-                          against a5aab06, but PR head is 9dbe1e8. Stale —
-                          re-request review on the current commit.
+                          against a5aab06, but PR head is 9dbe1e8. Stale — run
+                          `rloop pr request-review 812`. If it reports the
+                          request did not land, this reviewer will not review
+                          again and the way out is an operator decision, not a
+                          retry.
   ✗ [threads_unresolved]  1 unresolved review thread(s): #2109482
 ```
 
@@ -291,6 +294,7 @@ goes red. A marker you have only ever seen pass is a marker you have not tested.
 ## Use
 
 ```bash
+rloop --version                  # which build is this
 rloop check                      # validate config, print warnings, run nothing
 rloop preflight                  # environment checks only
 rloop gate                       # preflight, then the gates, then a verdict
@@ -301,6 +305,7 @@ rloop gate --json                # machine output
 
 ```bash
 rloop pr status 812              # evaluate every merge condition, read-only
+rloop pr request-review 812      # ask the forge reviewers again, verify it landed
 rloop pr threads 812             # list review threads and resolved state
 rloop pr reply 812 --thread <id> --body "Fixed in abc123: ..."
 rloop pr merge 812               # re-check everything, merge only if all holds
@@ -316,6 +321,12 @@ Exit codes are the contract:
 
 `1` and `2` are separate on purpose. Both block a merge, but a human fixes very
 different things.
+
+**`rloop` with no subcommand prints this usage and exits 2.** It does not run
+the gate. That used to be the default and it is a bad one for this tool: `gate`
+runs arbitrary commands out of your config, and `-C` defaults to the *config
+file's* directory rather than the cwd, so a bare invocation from the wrong shell
+does slow, real work against a tree you were not thinking about.
 
 ```console
 $ rloop gate
@@ -604,6 +615,32 @@ Setting **both** forms — the deprecated keys and a non-empty `reviewers:` — 
 a config error, not a merge: two sources of truth for who must review a PR is
 a config whose author cannot predict what will happen.
 
+**Update your version pins before you land the migration.** The two directions
+are not symmetric: 0.3.x accepts both shapes, but every release below 0.3.0
+*rejects* `reviewers:` outright — every config object carries `.strict()`, so an
+unrecognised key is a refusal, not a warning, and the gate stops running rather
+than degrading. `rloop.yaml` is normally tracked while the version pin usually
+sits in an untracked `.mcp.json`, so committing this edit first breaks the gate
+for every colleague still on an older rloop, at merge time, with no earlier
+signal to them.
+
+```console
+$ npx --package=@tezer/rloop@0.2.1 rloop check -c migrated.yaml
+migrated.yaml: invalid config
+  - (root): Unrecognized key(s) in object: 'reviewers'
+```
+
+### `merge.reviewer_timeout_seconds` does nothing
+
+It parses and validates, and no code reads it. It was specified as a bound on
+polling for forge verdicts; that polling was never built — rloop asks the forge
+once, and `pr status` / `pr merge` are single-shot. Delete the key; `rloop
+check` warns about it. It is removed in 1.0.
+
+If you wanted a reviewer timeout, the live one is `reviewers[].timeout_seconds`
+on a `kind: command` entry. It is deliberately rejected on a `kind: forge`
+entry, because there is no subprocess to time out.
+
 ```yaml
 # Old (still works, but deprecated and warned about):
 merge:
@@ -727,6 +764,33 @@ picked, and an upward search from the wrong directory can silently resolve to a
 *different* repository's config — running one project's gates with another
 project's markers, with no error to notice.
 
+#### Committing `.mcp.json`
+
+You do not need absolute paths, and so you do not need a per-developer file.
+`RLOOP_CONFIG` may be **relative**: it is resolved against the server's cwd,
+which an MCP host sets to the project directory, and the file must exist exactly
+there. That is not the guess the paragraph above refuses — there is no upward
+search, so a wrong cwd is a loud "config not found" rather than another repo's
+config. `RLOOP_REPO` can be dropped entirely; it defaults to the config's
+directory.
+
+```jsonc
+{
+  "mcpServers": {
+    "rloop": {
+      "command": "npx",
+      "args": ["--yes", "--package=@tezer/rloop@0.3.2", "rloop-mcp"],
+      "env": { "RLOOP_CONFIG": "rloop.yaml" }
+    }
+  }
+}
+```
+
+Worth committing rather than leaving to each developer: the version pin lives in
+this file, and a pin that drifts per machine is how a repo ends up with the CLI
+on one version and the MCP server on another, in the same checkout, with nothing
+surfacing the mismatch. `rloop --version` answers for the CLI.
+
 **Tools**
 
 | Tool | Annotation | Does |
@@ -735,6 +799,7 @@ project's markers, with no error to notice.
 | `preflight` | read-only | Environment, committer and worktree checks |
 | `gate_run` | executes, non-destructive | Run gates, return verdict **with evidence** |
 | `pr_status` | read-only | Every merge condition, all blockers at once |
+| `pr_request_review` | writes | Re-request the forge reviewers, and **verify the request landed** |
 | `pr_threads` | read-only | Review threads, paged to exhaustion |
 | `pr_reply_and_resolve` | writes | Reply, then resolve — never one without the other |
 | `pr_merge` | **destructive** | Re-checks everything, then merges. No force flag. |
@@ -835,8 +900,43 @@ The same bot answers to three spellings, verified live:
 | `requested_reviewers[].login` | `Copilot` |
 
 Comparing raw strings reports "no verdict" for a review that plainly exists.
-That fails safe — no verdict blocks a merge — but it still burns a polling
-window, so `matchesReviewer` normalizes instead.
+That fails safe — no verdict blocks a merge — but it still blocks a PR whose
+reviewer already spoke, so `matchesReviewer` normalizes instead.
+
+### Getting out of `reviewer_stale`
+
+A push makes every prior verdict stale, correctly. `rloop pr request-review <N>`
+is what asks for a new one, and it **reads the result back** rather than
+trusting the call:
+
+```console
+$ rloop pr request-review 1030
+✗ copilot-pull-request-reviewer: the request did not land — the API reported
+  success and added nobody. Retrying will not change that. Check the reviewer is
+  still installed and entitled on this repository; if it is, dismiss any stale
+  review so it stops being the latest verdict, or decide on the evidence you
+  have. rloop will not merge past this for you.
+```
+
+That output is the honest report of a real failure mode, measured against GitHub
+Copilot on this repository across two days:
+
+| When | What happened |
+|---|---|
+| 2026-08-25 | Three requests on PR #4 landed, each followed by a review |
+| 2026-08-26 | Four calls on PR #5 — REST with the bare login, REST with `[bot]`, REST as `Copilot`, and the GraphQL `requestReviews` mutation with the bot's node id and `union: true` — all returned success, and produced no timeline event, no pending request, and no review within five minutes |
+
+Same repo, same account, same calls. So this is not a spelling or an endpoint
+choice, and rloop deliberately does not guess at the cause in its message.
+Whatever it is, it lives on the reviewer's side and rloop cannot fix it from
+here.
+
+What rloop can do is not pretend. `=` means that reviewer already reviewed the
+current head (success), `✓` means the request is pending, `✗` means the call
+reported success and added nobody. Exit code is 1 unless every reviewer is `=`
+or `✓`. **A reviewer that never turns up keeps blocking the merge** — the rule
+that a missing signal is a blocker does not get an exception for a reviewer that
+is broken rather than slow.
 
 ### No tokens
 
@@ -973,15 +1073,17 @@ If not, add the branch.
 ### `pr merge` refuses with `reviewer_stale`
 
 The fix depends on which kind of reviewer went stale, and the blocker message
-now says which action applies ("re-request review" for `kind: forge`,
-"re-run the reviewer" for `kind: command`). The reviewer's line in
+names the action that applies — `rloop pr request-review <N>` for `kind: forge`,
+"re-run the reviewer" for `kind: command`. The reviewer's line in
 `rloop pr status`, which prints `name (kind): status`, confirms which kind you
 are looking at.
 
 - **`kind: forge`** — your reviewer approved (or commented on) an earlier
-  commit and you have pushed since. Re-request the review on the current
-  head. Two reviewers agreeing about different versions of the code is not
-  agreement.
+  commit and you have pushed since. Run `rloop pr request-review <N>`. Two
+  reviewers agreeing about different versions of the code is not agreement.
+  If it reports the request did not land, that is not a retry case — see
+  [Getting out of `reviewer_stale`](#getting-out-of-reviewer_stale) for why a
+  forge reviewer can refuse a second review and what is left to do.
 - **`kind: command`** — the provider echoed a `sha` that is not head. There is
   no review to re-request; the command reviewer only runs as part of
   `rloop pr status` or `rloop pr merge` (never `rloop gate`, which never
