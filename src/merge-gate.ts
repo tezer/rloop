@@ -243,8 +243,8 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
           blockers.push({
             code: 'reviewer_changes_requested',
             message:
-              `"${r.name}" requested changes${detailSuffix}. Address the requested changes ` +
-              `and re-request review.`,
+              `"${r.name}" requested changes${detailSuffix}. Address them, push, then run ` +
+              `\`rloop pr request-review ${pr.number}\`.`,
           });
         } else if (r.findingsReason === 'not_approved') {
           const reviewerCfg = cfg.reviewers.find((rv) => rv.name === r.name);

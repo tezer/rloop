@@ -1065,15 +1065,17 @@ If not, add the branch.
 ### `pr merge` refuses with `reviewer_stale`
 
 The fix depends on which kind of reviewer went stale, and the blocker message
-now says which action applies ("re-request review" for `kind: forge`,
-"re-run the reviewer" for `kind: command`). The reviewer's line in
+names the action that applies — `rloop pr request-review <N>` for `kind: forge`,
+"re-run the reviewer" for `kind: command`. The reviewer's line in
 `rloop pr status`, which prints `name (kind): status`, confirms which kind you
 are looking at.
 
 - **`kind: forge`** — your reviewer approved (or commented on) an earlier
-  commit and you have pushed since. Re-request the review on the current
-  head. Two reviewers agreeing about different versions of the code is not
-  agreement.
+  commit and you have pushed since. Run `rloop pr request-review <N>`. Two
+  reviewers agreeing about different versions of the code is not agreement.
+  If it reports the request did not land, that is not a retry case — see
+  [Getting out of `reviewer_stale`](#getting-out-of-reviewer_stale) for why a
+  forge reviewer can refuse a second review and what is left to do.
 - **`kind: command`** — the provider echoed a `sha` that is not head. There is
   no review to re-request; the command reviewer only runs as part of
   `rloop pr status` or `rloop pr merge` (never `rloop gate`, which never
