@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../src/config.js';
 import { runGates } from '../src/gate.js';
+import { HERMETIC_GIT_ENV } from './support/git.js';
 
 const repos: string[] = [];
 afterEach(() => {
@@ -26,13 +27,7 @@ function makeRepo(files: Record<string, string> = {}): string {
     execFileSync('git', args, {
       cwd: dir,
       stdio: 'pipe',
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: 't',
-        GIT_AUTHOR_EMAIL: 't@e',
-        GIT_COMMITTER_NAME: 't',
-        GIT_COMMITTER_EMAIL: 't@e',
-      },
+      env: { ...process.env, ...HERMETIC_GIT_ENV },
     });
   git('init', '-q');
   git('add', '-A');

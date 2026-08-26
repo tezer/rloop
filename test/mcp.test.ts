@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createServer } from '../src/mcp/server.js';
+import { HERMETIC_GIT_ENV } from './support/git.js';
 
 let repo: string;
 let client: Client;
@@ -34,13 +35,7 @@ beforeAll(async () => {
   repo = mkdtempSync(path.join(tmpdir(), 'rloop-mcp-'));
   writeFileSync(path.join(repo, 'rloop.yaml'), CONFIG);
   writeFileSync(path.join(repo, 'seed.txt'), 'seed');
-  const env = {
-    ...process.env,
-    GIT_AUTHOR_NAME: 't',
-    GIT_AUTHOR_EMAIL: 't@e',
-    GIT_COMMITTER_NAME: 't',
-    GIT_COMMITTER_EMAIL: 't@e',
-  };
+  const env = { ...process.env, ...HERMETIC_GIT_ENV };
   for (const args of [['init', '-q'], ['add', '-A'], ['commit', '-qm', 'init']]) {
     execFileSync('git', args, { cwd: repo, stdio: 'pipe', env });
   }
@@ -74,6 +69,7 @@ describe('mcp server', () => {
       'gate_run',
       'pr_merge',
       'pr_reply_and_resolve',
+      'pr_request_review',
       'pr_status',
       'pr_threads',
       'preflight',

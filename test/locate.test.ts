@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -113,5 +113,36 @@ describe('locateForServer — pinned mode (RLOOP_CONFIG set)', () => {
     process.env.RLOOP_CONFIG = a.config;
     process.env.RLOOP_REPO = a.dir;
     await expect(locateForServer({ repoRoot: b.dir })).rejects.toThrow(/pinned to repo/);
+  });
+
+  /**
+   * A RELATIVE `RLOOP_CONFIG` is what makes `.mcp.json` committable, and the
+   * README now says so — so it is pinned here rather than left as a property
+   * that happens to hold.
+   *
+   * Why it is safe despite "there is no cwd fallback": this is not a search.
+   * The path is resolved against cwd and the file must exist exactly there, so
+   * a server launched from the wrong directory gets a loud "config not found"
+   * rather than a different repository's config. The second case is the one
+   * that matters; without it this is just a test that path.resolve works.
+   */
+  it('resolves a relative RLOOP_CONFIG against cwd, and errors elsewhere', async () => {
+    const a = project('relcfg');
+    process.env.RLOOP_CONFIG = 'rloop.yaml';
+    const cwd = process.cwd();
+    try {
+      process.chdir(a.dir);
+      const res = await locateForServer({});
+      // realpath, because macOS resolves TMPDIR through a /private symlink.
+      expect(realpathSync(res.configPath)).toBe(realpathSync(a.config));
+      expect(realpathSync(res.repoRoot)).toBe(realpathSync(a.dir));
+
+      const elsewhere = mkdtempSync(path.join(tmpdir(), 'rloop-nocfg-'));
+      dirs.push(elsewhere);
+      process.chdir(elsewhere);
+      await expect(locateForServer({})).rejects.toThrow(/config not found/);
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });

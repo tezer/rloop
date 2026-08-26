@@ -47,6 +47,30 @@ export interface MergeDecision {
 const short = (sha: string) => sha.slice(0, 7);
 
 /**
+ * What to tell an operator when a forge reviewer will not review again.
+ *
+ * Worth spelling out, because "re-request review" sends the reader at an API
+ * that answers 200 and does nothing. Observed against GitHub Copilot: the REST
+ * `pulls/N/requested_reviewers` endpoint never adds the bot at all, and the
+ * GraphQL `requestReviews` mutation works exactly once — before Copilot has
+ * filed a review. Afterwards every call reports success and adds nobody, under
+ * `union:true` and `union:false` alike, and clearing the request set first
+ * changes nothing.
+ *
+ * So on a PR that took more than one round — which is most of them — there may
+ * be no API path to a second verdict. `rloop pr request-review` reports that
+ * honestly instead of pretending, and the remaining moves are the operator's:
+ * dismiss the stale review so it stops being the latest one, or decide on the
+ * evidence you have. rloop will not merge past this by itself, and should not.
+ *
+ * Kept next to the blocker that fires so the two cannot drift apart.
+ */
+export const STUCK_REVIEWER_ADVICE =
+  'the request did not land. A forge reviewer that has already reviewed this PR may refuse ' +
+  'to review again — the API answers 200 and adds nobody. Dismiss the stale review to ' +
+  'un-pin it, or decide on the evidence you have. rloop will not merge past this for you.';
+
+/**
  * Decide whether a PR may be merged. Pure — no I/O, no clock, no network.
  *
  * Every condition is evaluated and reported, rather than short-circuiting on
@@ -149,7 +173,9 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         // it, as the README's troubleshooting section already does.
         const advice =
           r.kind === 'forge'
-            ? 're-request review on the current commit'
+            ? `run \`rloop pr request-review ${pr.number}\`. If it reports the request did not ` +
+              'land, this reviewer will not review again and the way out is an operator ' +
+              'decision, not a retry'
             : 're-run the reviewer against the current commit';
         blockers.push({
           code: 'reviewer_stale',

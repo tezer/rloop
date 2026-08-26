@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createServer } from '../src/mcp/server.js';
+import { HERMETIC_GIT_ENV } from './support/git.js';
 
 /**
  * One server, two repositories, no RLOOP_CONFIG — each call names its project.
@@ -28,13 +29,7 @@ function project(name: string, marker: string): { dir: string; config: string } 
     `version: 1\ngates:\n  - name: build\n    run: echo "${marker}"\n    require: ["^${marker}$"]\n`,
   );
   writeFileSync(path.join(dir, 'seed.txt'), name);
-  const env = {
-    ...process.env,
-    GIT_AUTHOR_NAME: 't',
-    GIT_AUTHOR_EMAIL: 't@e',
-    GIT_COMMITTER_NAME: 't',
-    GIT_COMMITTER_EMAIL: 't@e',
-  };
+  const env = { ...process.env, ...HERMETIC_GIT_ENV };
   for (const args of [['init', '-q'], ['add', '-A'], ['commit', '-qm', name]]) {
     execFileSync('git', args, { cwd: dir, stdio: 'pipe', env });
   }

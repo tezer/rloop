@@ -19,7 +19,8 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
 ## The loop
 
 1. **Trigger every review stream in parallel.** Request the external reviewer
-   *and* start your own review passes in the same turn. Do not serialize them.
+   (`pr_request_review`) *and* start your own review passes in the same turn. Do
+   not serialize them.
 
    Make one pass ask a different question from all the others. Most passes check
    **citations**: is each claim true, does each reference point where it says it
@@ -64,8 +65,12 @@ configuration exists precisely so an agent cannot merge somewhere it should not.
      evidence** — command output, a file citation. A rebuttal has to survive
      someone re-reading it later. "This is intentional" is not evidence.
    - Commit, push, and record the new head commit.
-   - Re-request the external reviewer. A new push makes every prior verdict
-     stale.
+   - Re-request the external reviewer with `pr_request_review`. A new push makes
+     every prior verdict stale. Read what it returns: `moot` means that reviewer
+     has already reviewed the new head, which is fine. `ok: false` means the
+     request did not land — a forge reviewer that has already reviewed this PR
+     may refuse to review again, and the API says 200 either way. That is not a
+     thing to retry. Stop and hand it to the operator with the reviewer named.
    - **Re-run everything.** All review passes, all gates. No partial re-runs: a
      fix for one finding routinely breaks a different dimension.
    - Return to step 3.
