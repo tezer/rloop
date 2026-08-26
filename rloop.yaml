@@ -93,6 +93,18 @@ gates:
       node dist/cli.js check -c examples/next-vitest.yaml
       SMOKE_DIR=$(mktemp -d)
       trap 'rm -rf "$SMOKE_DIR"' EXIT
+      # Isolate the throwaway repo from whatever is in the developer's
+      # gitconfig. Observed: `commit.gpgsign = true` with a signing agent that
+      # is not running fails `git commit` with "failed to write commit object",
+      # so this gate went red on a machine where nothing was wrong with rloop.
+      # A missing config file reads as empty config, which is the intent.
+      #
+      # Note the direction. src/git.ts UNSETS these so a leaked value cannot
+      # redirect rloop's own reads; here they are SET, so a fixture cannot
+      # inherit the operator's. Setting them inside the script is what makes
+      # that possible — the scrub applies when rloop spawns this gate, not to
+      # what the gate exports afterwards.
+      export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
       git init -q "$SMOKE_DIR"
       git -C "$SMOKE_DIR" config user.email smoke@rloop.invalid
       git -C "$SMOKE_DIR" config user.name "rloop smoke"
