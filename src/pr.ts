@@ -75,6 +75,9 @@ export async function prStatus(
     repoRoot: opts.repoRoot,
     headSha: pr.headSha,
     reviews,
+    // The PR's own base, not a guess and not a config default. This is the
+    // single fact a command reviewer most needs and is least able to derive.
+    baseBranch: pr.baseRef,
   });
   const degradation = degradationOf(reviewerReports, cfg);
 

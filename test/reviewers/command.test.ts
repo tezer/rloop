@@ -140,6 +140,43 @@ describe('runCommandReviewer', () => {
     expect(r.status).toBe('stale');
   });
 
+  describe('inject_sha', () => {
+    const inject = (file: string) =>
+      runCommandReviewer(
+        { ...rev(file), inject_sha: true },
+        { repoRoot: process.cwd(), headSha: HEAD },
+      );
+
+    it('accepts a document with no sha, and binds it to head', async () => {
+      // The reason to want this: the alternative is asking a model to copy a
+      // 40-character hex string into a JSON field, and a model asked to copy a
+      // hex string will eventually not. That failure arrives as `stale`, which
+      // sends the operator looking at commits instead of at the prompt.
+      const r = await inject('no-sha.mjs');
+      expect(r.status).toBe('clean');
+      expect(r.sha).toBe(HEAD);
+    });
+
+    it('still classifies findings normally without the echo', async () => {
+      const r = await inject('no-sha-critical.mjs');
+      expect(r.status).toBe('findings');
+      expect(r.sha).toBe(HEAD);
+    });
+
+    it('does NOT accept a sha that is present and wrong', async () => {
+      // The relaxation is "you need not echo it", never "any sha will do". A
+      // provider that reviewed another commit and said so is still stale.
+      const r = await inject('wrong-sha.mjs');
+      expect(r.status).toBe('stale');
+    });
+
+    it('is opt-in: without it, a missing sha is malformed', async () => {
+      // The other half. A single permissive schema would turn a per-reviewer
+      // relaxation into a silent global one.
+      expect((await go('no-sha.mjs')).status).toBe('malformed');
+    });
+  });
+
   it('times out into unavailable', async () => {
     const r = await runCommandReviewer(
       { ...rev('hang.mjs'), timeout_seconds: 1 },
@@ -156,6 +193,37 @@ describe('runCommandReviewer', () => {
     const size = 400 * 1024;
     expect(r.findings[0].body).toHaveLength(size);
     expect(r.findings[0].body?.endsWith('END-OF-BODY')).toBe(true);
+  });
+
+  it('does NOT tell the operator to delete a dismissal that matched nothing', async () => {
+    // Sound advice for a deterministic provider; wrong for a model, whose
+    // findings come and go between runs on identical input. A reader who
+    // follows the old imperative deletes the one thing standing between the
+    // same finding and a blocked merge tomorrow.
+    const r = await go('clean.mjs', [{ fingerprint: 'deadbeef', reason: 'stale entry' }]);
+    expect(r.detail).toContain('deadbeef');
+    expect(r.detail).not.toMatch(/delete/i);
+    expect(r.detail).toMatch(/did not recur/i);
+  });
+
+  it('says WHY a dismissal cannot match when the provider emits no ids', async () => {
+    // The failure this names: without `id`, identity is path + normalized
+    // title, and a model rewords. Every dismiss entry then stops matching
+    // while the config still looks configured.
+    const r = await go('one-critical-idless.mjs', [
+      { fingerprint: 'deadbeef', reason: 'was fixed' },
+    ]);
+    expect(r.detail).toMatch(/none carried an "id"/);
+  });
+
+  it('stays quiet about ids when the provider does emit them', async () => {
+    // The other half. A linter with stable rule codes must not be lectured
+    // about a problem it does not have.
+    const r = await go('one-critical-with-id.mjs', [
+      { fingerprint: 'deadbeef', reason: 'was fixed' },
+    ]);
+    expect(r.detail).toContain('deadbeef');
+    expect(r.detail).not.toMatch(/carried an "id"/);
   });
 
   it('a dismissed blocking finding is reported but does not block', async () => {

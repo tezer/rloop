@@ -1,4 +1,5 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -152,4 +153,125 @@ export async function isDirty(cwd: string): Promise<boolean> {
 export async function changedPaths(baseRef: string, cwd: string): Promise<string[]> {
   const out = await git(['diff', '--name-only', `${baseRef}...HEAD`], cwd);
   return out ? out.split('\n').filter(Boolean) : [];
+}
+
+/**
+ * Update `refs/remotes/<remote>/<branch>` from the remote. Throws on failure.
+ *
+ * THROWING IS THE POINT. Everything downstream of this — the diff a reviewer
+ * reads, the merge base it is taken from — is computed from a local tracking
+ * ref, and a tracking ref that was not updated is not detectably wrong: the
+ * diff still applies, still parses, and still describes real code. It is
+ * merely about a base nobody is merging into. A reviewer handed that diff
+ * reports `clean` with total confidence, having reviewed work that already
+ * landed and missed the commits that did not. There is no signal later in the
+ * pipeline that catches it, so the failure has to be fatal here.
+ *
+ * An EXPLICIT refspec, not the bare `git fetch origin main` form. That form
+ * does update the tracking ref — verified, and worth stating because it is
+ * widely believed not to — but only via git's opportunistic update, which
+ * depends on the remote having a configured fetch refspec. rloop runs in
+ * worktrees and CI checkouts where that is not guaranteed. The leading `+`
+ * forces the update, because a force-push to the base branch is a legitimate
+ * thing for a base branch to have had happen to it.
+ */
+export async function fetchBranch(remote: string, branch: string, cwd: string): Promise<void> {
+  await git(
+    ['fetch', '--no-tags', '--quiet', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
+    cwd,
+  );
+}
+
+export interface DiffWrite {
+  bytes: number;
+  /** True when `maxBytes` cut the diff short. See `prepareDiff`. */
+  truncated: boolean;
+}
+
+/**
+ * Write `git diff <baseRef>...HEAD` to `dest`, optionally capped.
+ *
+ * Streamed to a file rather than returned as a string, for two reasons that
+ * both bite in practice. `execFile` buffers stdout in memory with a default
+ * 1MB cap and fails the whole call with ENOBUFS past it — a diff big enough
+ * to be worth capping is a diff big enough to hit that. And the consumer is a
+ * subprocess: handing it a path lets it read the diff without the bytes
+ * crossing an argv element, which is capped at MAX_ARG_STRLEN (131072 on a
+ * 4K-page Linux) and fails at spawn with E2BIG rather than anywhere legible.
+ *
+ * Three-dot, so the diff is against the merge base rather than the tip. A
+ * two-dot diff against a base branch that has moved shows every commit the
+ * base gained since the branch forked as if the branch had reverted them.
+ *
+ * The cap slices on a BYTE boundary and may therefore split a multi-byte
+ * character at the very end. That is accepted rather than fixed: a diff is
+ * read as lines, the tail line is already incomplete by definition once
+ * truncation happened, and `truncated` is what the caller acts on — not the
+ * final character.
+ */
+export function writeDiff(
+  baseRef: string,
+  cwd: string,
+  dest: string,
+  maxBytes: number | null,
+): Promise<DiffWrite> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['diff', `${baseRef}...HEAD`], {
+      cwd,
+      env: { ...process.env, ...GIT_ENV_OVERRIDES },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const sink = createWriteStream(dest);
+    const errChunks: string[] = [];
+    let bytes = 0;
+    let truncated = false;
+    let settled = false;
+
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      sink.destroy();
+      child.kill('SIGKILL');
+      reject(err);
+    };
+
+    child.stderr.on('data', (b: Buffer) => errChunks.push(b.toString('utf8')));
+    child.stderr.on('error', () => {});
+    sink.on('error', fail);
+
+    child.stdout.on('error', () => {});
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (truncated) return;
+      if (maxBytes === null || bytes + chunk.length <= maxBytes) {
+        bytes += chunk.length;
+        sink.write(chunk);
+        return;
+      }
+      // Take the part that fits, then stop reading. The child is left to be
+      // killed on 'close' below rather than here: destroying stdout mid-write
+      // races the sink's own flush, and a partial final write is exactly the
+      // silent corruption this whole feature exists to remove.
+      const room = maxBytes - bytes;
+      if (room > 0) {
+        sink.write(chunk.subarray(0, room));
+        bytes += room;
+      }
+      truncated = true;
+      child.kill('SIGKILL');
+    });
+
+    child.on('error', (e) => fail(new Error(`could not run git diff: ${e.message}`)));
+    child.on('close', (code) => {
+      if (settled) return;
+      // A non-zero exit is expected and fine once we truncated — we killed it.
+      if (code !== 0 && !truncated) {
+        const why = errChunks.join('').trim().split('\n')[0] || `git diff exited ${code}`;
+        fail(new Error(`could not diff against ${baseRef}: ${why}`));
+        return;
+      }
+      settled = true;
+      sink.end(() => resolve({ bytes, truncated }));
+    });
+  });
 }

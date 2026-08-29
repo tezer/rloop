@@ -458,21 +458,68 @@ reviewers:
 
   - name: local-review
     kind: command
-    run: my-review-script --base origin/main
+    run: my-review-script
     timeout_seconds: 600        # default; max 3600
+    needs_diff: true            # rloop fetches the base and writes the diff
+    diff_max_bytes: 400000      # optional cap; requires needs_diff
+    inject_sha: true            # rloop supplies `sha`; see below
     dismiss:
       - fingerprint: a1b2c3d4
         reason: "false positive — checked manually, see PR #123"
 ```
 
+A complete, commented model-backed provider lives in
+[`examples/reviewers/`](examples/reviewers/), along with the five safety
+properties this feature exists to take off your hands.
+
+### What rloop hands the provider
+
+rloop runs the command once, from the repo root, with these set:
+
+| Variable | Value | When |
+|---|---|---|
+| `RLOOP_HEAD_SHA` | the commit under review | always |
+| `RLOOP_BASE_REF` | e.g. `origin/main` — **already fetched** | `needs_diff: true` |
+| `RLOOP_DIFF_FILE` | absolute path to `git diff <base>...HEAD` | `needs_diff: true` |
+| `RLOOP_DIFF_BYTES` | size of that file | `needs_diff: true` |
+| `RLOOP_DIFF_TRUNCATED` | `1` if `diff_max_bytes` cut it short | `needs_diff: true` |
+
+`needs_diff` is off by default and has to be asked for, because turning it on
+makes a **failed fetch fatal** to that reviewer — and rloop cannot tell from
+the outside whether your `run:` line reads a diff at all. A reviewer that
+shells out to `npm audit` does not, and would otherwise be blocked in any
+checkout without an `origin` remote, for a resource it never wanted.
+
+Ask for it when the reviewer reviews a diff, and rloop takes over the parts
+that fail *silently*:
+
+- **the base is the PR's own**, not a config default or a guess;
+- **the tracking ref is fetched first**, and a failure is `unavailable`, not a
+  review of whatever `origin/main` happened to point at last week;
+- **the diff is three-dot**, from the merge base, so a base branch that moved
+  does not present its own new commits as reverts by your branch;
+- **a truncated diff can never be reported `clean`** (see below).
+
+A stale base is the worst of these because it is not detectably wrong: the
+diff still applies, still parses, still describes real code. It is merely
+about a base nobody is merging into, and the verdict comes back confident.
+
+The diff is written to a temp directory, never inside the worktree — a file
+written in the repo would make it dirty, and rloop refuses to run against a
+dirty worktree, so a reviewer would poison the very next invocation.
+
+Pass the diff to your model on **stdin**, not as an argument: a single argv
+element is capped at `MAX_ARG_STRLEN` (131072 bytes on a 4K-page Linux, about
+32 pages of diff), and exceeding it fails at spawn with `E2BIG`, which reads
+as "the reviewer is broken".
+
 ### The contract: one JSON document on stdout
 
-rloop runs the command once, from the repo root, with `RLOOP_HEAD_SHA` set to
-the current head commit. The command must print **exactly one JSON document
-on stdout and nothing else** — any narration ("analysing 41 files…", progress
-bars, retries) belongs on **stderr**. rloop captures the two streams
-separately for exactly this reason: a real tool that logs progress would
-otherwise corrupt the document the moment it prints anything.
+The command must print **exactly one JSON document on stdout and nothing
+else** — any narration ("analysing 41 files…", progress bars, retries)
+belongs on **stderr**. rloop captures the two streams separately for exactly
+this reason: a real tool that logs progress would otherwise corrupt the
+document the moment it prints anything.
 
 ```json
 {
@@ -490,11 +537,18 @@ otherwise corrupt the document the moment it prints anything.
 }
 ```
 
-`sha` is required; so are a finding's `severity` and `title`. `id`, `path`,
-`line` and `body` are optional. Every other key — top-level or per-finding —
-fails the schema: a provider printing a field rloop does not recognize is a
-provider written against a different contract, and guessing which half is
-right is how a blocking finding gets silently dropped.
+`sha` is required unless you set `inject_sha`; so are a finding's `severity`
+and `title`. `id`, `path`, `line` and `body` are optional. Every other key —
+top-level or per-finding — fails the schema: a provider printing a field rloop
+does not recognize is a provider written against a different contract, and
+guessing which half is right is how a blocking finding gets silently dropped.
+
+If you drive a model with structured outputs, note the collision: OpenAI
+requires every key in `properties` to also appear in `required`, while rloop
+treats four of them as optional and rejects unknown keys — and an empty string
+is a value, not an absence. Ask the model for all six fields and strip the
+empty ones before printing. There is a worked `jq` filter in
+[`examples/reviewers/codex-review.sh`](examples/reviewers/codex-review.sh).
 
 ### What the `sha` echo proves, and what it does not
 
@@ -510,18 +564,36 @@ provider that inspects the former is inspecting the latter. The echo catches
 a *cached* run; the clean-tree requirement is what makes "ran now" mean "ran
 against this commit".
 
+`inject_sha: true` drops the echo and lets rloop supply the sha it spawned the
+process with. Reach for it with a model-backed provider, where the
+alternatives are a post-processing step that grafts the value in or asking a
+model to copy a 40-character hex string into a JSON field — and a model asked
+to copy a hex string will eventually not. That failure arrives as `stale`,
+which reads as "review another commit" and sends you looking at git history
+instead of at your prompt.
+
+Understand what it gives up: the echo's job was to catch a *cached* document,
+and a provider rloop spawned in this invocation can only produce one by
+caching internally. That is the case you are opting out of checking. What
+still holds is the binding to the commit, which was never the echo's doing —
+it is the clean-tree requirement above. And a document that *does* carry a
+`sha` still has to carry the right one: "you need not echo it" is not "any sha
+will do".
+
 ### Classification
 
 Order matters — this table is `runCommandReviewer`'s whole contract:
 
 | Condition | Status |
 |---|---|
+| `needs_diff` is set and no diff could be prepared | `unavailable` — never ran |
 | spawn failed, or timed out | `unavailable` — never ran |
 | output unusable (unparseable OR fails the document schema) AND exit != 0 | `unavailable` — crashed mid-review |
 | output unusable (unparseable OR fails the document schema) AND exit == 0 | `malformed` — ran fine, printed junk |
 | echoed `sha` != head | `stale` |
 | blocking findings present | `findings` — regardless of exit code |
 | no blocking findings AND exit != 0 | `unavailable` — the provider's own signals contradict each other |
+| no blocking findings AND the diff was truncated | `unavailable` — a partial review, reported as one |
 | no blocking findings AND exit == 0 | `clean` |
 
 The exit code is the provider's own verdict on whether it ran. rloop trusts
@@ -542,7 +614,23 @@ win by default. That is `unavailable`, with a detail explaining the
 contradiction, not a pass.
 
 Nothing on this list returns `clean` on a path where the review did not
-actually happen.
+actually happen — including the case where it happened to only part of the
+change. A `diff_max_bytes` cap that fires means the reviewer saw a fraction of
+the diff, so its "I found nothing" is a statement about a fraction. Blocking
+findings are *not* overridden: an incomplete review that found a blocker has
+still found one, and you should go fix it. It is only the merge-permitting
+direction that gets withheld.
+
+**That check is rloop's job, not yours, and the reason is subtle enough to be
+worth stating.** A provider guarding its own truncation counts findings
+*before* `dismiss:` is applied; rloop decides *after*. So a truncated diff
+yielding one critical finding that a dismissal then removes leaves the
+provider exiting 0 (it found something — its own guard was satisfied) and
+rloop seeing nothing blocking. A partial review reported as `clean`, out of
+two pieces of individually correct logic. The general rule, which is worth
+carrying into any provider you write: **any provider logic keyed on "did I
+find something blocking" is keyed on the wrong number.** Only rloop knows what
+survived dismissal.
 
 ### Severity and what blocks
 
@@ -567,6 +655,27 @@ output** — there is no "resolved" flag to set. Paste the printed fingerprint
 into `dismiss:` to suppress a specific finding; `reason` is required, because
 a dismissal with no stated reason is indistinguishable from a finding someone
 silenced because it was inconvenient.
+
+**A provider whose findings lack `id` cannot be dismissed reliably.** With no
+`id`, identity falls back to `path` + normalized `title` — stable for a linter
+with fixed rule text, and *not* stable for a model. One defect came back
+worded three ways across three runs while this feature was being built:
+
+> Diff embeds instructions directing the reviewer's verdict
+> The reviewed diff embeds instructions addressed to the reviewer
+> Diff contains instructions intended to override the automated reviewer
+
+Three titles, three fingerprints, and every `dismiss:` entry stops matching on
+the next run — *silently*, because the config still looks configured. Ask your
+provider for an id that names the **defect**, not its sentence about the
+defect. rloop says so when a dismissal misses and the run's findings carried
+no ids.
+
+When a dismissal matches nothing, rloop names it but does **not** tell you to
+delete it. Deleting is right for a deterministic provider and wrong for a
+model, whose findings come and go between runs on identical input: the entry
+that missed today may be the only thing standing between the same finding and
+a blocked merge tomorrow.
 
 ### Degradation always blocks the merge
 
@@ -1121,8 +1230,10 @@ of.
 | `src/config.ts` | Config schema + validation (zod) |
 | `src/evidence.ts` | Marker matching — the testable core |
 | `src/gate.ts` | Runner: process control, SHA binding, path conditions |
+| `src/reviewers/` | Command reviewers: the diff handed over, the document read back |
 | `test/fixtures/` | Golden logs, including a real masked failure |
 | `examples/` | Ready-to-copy configs |
+| `examples/reviewers/` | A complete model-backed provider, and the traps it avoids |
 
 ## License
 

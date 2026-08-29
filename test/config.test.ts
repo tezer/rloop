@@ -220,6 +220,50 @@ reviewers:
     ).toThrow();
   });
 
+  /**
+   * `diff_max_bytes` without `needs_diff` is a knob that bounds nothing:
+   * rloop writes no diff, so there is nothing to cap, while the author who
+   * set it believes their reviewer is bounded. An inert accepted key is the
+   * exact failure `merge.reviewer_timeout_seconds` was reported for; refusing
+   * at parse time is cheaper than a warning nobody reads.
+   */
+  it('rejects diff_max_bytes without needs_diff, which would cap nothing', () => {
+    expect(() =>
+      loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+    diff_max_bytes: 200000
+`),
+    ).toThrow(/needs_diff/);
+  });
+
+  it('accepts diff_max_bytes alongside needs_diff', () => {
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+    needs_diff: true
+    diff_max_bytes: 200000
+`);
+    expect(cfg.reviewers[0]).toMatchObject({ needs_diff: true, diff_max_bytes: 200000 });
+  });
+
+  it('defaults needs_diff and inject_sha to the 0.3.x behaviour', () => {
+    // Both default OFF so the upgrade is purely additive: `needs_diff` adds a
+    // fetch whose failure is fatal, and `inject_sha` relaxes a check. Neither
+    // may arrive by surprise in a config that did not ask for it.
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+`);
+    expect(cfg.reviewers[0]).toMatchObject({ needs_diff: false, inject_sha: false });
+  });
+
   it('rejects a dismissal with no reason', () => {
     expect(() =>
       loadConfig(`${base}

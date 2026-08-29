@@ -1,3 +1,4 @@
+import type { DiffContext } from './diff.js';
 import { parseProviderDocument } from './document.js';
 import { fingerprint } from './fingerprint.js';
 import { readProviderJson } from './read-json.js';
@@ -8,6 +9,9 @@ export interface CommandReviewer {
   run: string;
   timeout_seconds: number;
   dismiss: Array<{ fingerprint: string; reason: string }>;
+  /** See the `sha` handling below, and `config.ts`. Defaults to false. */
+  inject_sha?: boolean;
+  diff_max_bytes?: number | null;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -24,6 +28,7 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  *
  * Classification order matters and is the whole contract:
  *
+ *   no diff could be prepared                    -> unavailable  (never ran)
  *   spawn failed / timed out                     -> unavailable  (never ran)
  *   output unusable (unparseable OR fails the
  *     document schema) AND exit != 0             -> unavailable  (crashed mid-review)
@@ -31,8 +36,9 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  *     document schema) AND exit == 0             -> malformed    (ran fine, printed junk)
  *   echoed sha != head                           -> stale
  *   blocking findings present                    -> findings     (exit code irrelevant)
- *   no blocking findings AND exit != 0            -> unavailable  (signals contradict)
- *   no blocking findings AND exit == 0            -> clean
+ *   no blocking findings AND exit != 0           -> unavailable  (signals contradict)
+ *   no blocking findings AND diff truncated      -> unavailable  (partial review)
+ *   no blocking findings AND exit == 0           -> clean
  *
  * A non-zero exit may NEVER produce `clean` — that is the rule this table
  * exists to enforce. It splits in two directions once the document parses:
@@ -46,10 +52,17 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  * `clean`.
  *
  * Nothing here returns clean on a path where the review did not happen.
+ *
+ * `diff` is what rloop hands across the boundary so a provider can be a
+ * pipeline instead of a program: `RLOOP_BASE_REF` and `RLOOP_DIFF_FILE` mean
+ * the provider never re-derives the base, never runs its own fetch, and never
+ * has to get the fatal-on-failure part right. `diffError` is the other half —
+ * when rloop could not produce a diff it says so here rather than running the
+ * provider against whatever a stale tracking ref happened to point at.
  */
 export async function runCommandReviewer(
   rev: CommandReviewer,
-  opts: { repoRoot: string; headSha: string },
+  opts: { repoRoot: string; headSha: string; diff?: DiffContext | null; diffError?: string | null },
 ): Promise<ReviewerReport> {
   const base = {
     name: rev.name,
@@ -60,10 +73,35 @@ export async function runCommandReviewer(
     unavailableReason: null,
   };
 
+  // Before anything is spawned. A provider run against an unknown base is
+  // worse than a provider not run at all: the first produces a confident
+  // verdict about the wrong code, the second produces a blocker.
+  if (opts.diffError) {
+    return assertReasonCoupling({
+      ...base,
+      status: 'unavailable',
+      unavailableReason: 'never_ran',
+      detail: `could not prepare the diff to review: ${truncate(opts.diffError)}`,
+    });
+  }
+
   const run = await readProviderJson(rev.run, {
     cwd: opts.repoRoot,
     timeoutMs: rev.timeout_seconds * 1000,
-    env: { RLOOP_HEAD_SHA: opts.headSha },
+    env: {
+      RLOOP_HEAD_SHA: opts.headSha,
+      ...(opts.diff
+        ? {
+            RLOOP_BASE_REF: opts.diff.baseRef,
+            RLOOP_DIFF_FILE: opts.diff.file,
+            RLOOP_DIFF_BYTES: String(opts.diff.bytes),
+            // Informational for the provider (it may want to say so in its
+            // prompt). It is NOT what enforces the truncation rule — that is
+            // done below, where the provider cannot get it wrong.
+            RLOOP_DIFF_TRUNCATED: opts.diff.truncated ? '1' : '0',
+          }
+        : {}),
+    },
   });
 
   if (run.spawnError) {
@@ -83,7 +121,7 @@ export async function runCommandReviewer(
     });
   }
 
-  const parsed = parseProviderDocument(run.stdout);
+  const parsed = parseProviderDocument(run.stdout, { shaOptional: rev.inject_sha === true });
   if (!parsed.ok) {
     if (run.exitCode !== 0) {
       // The parse/schema failure is the precise diagnosis — computed a few
@@ -108,13 +146,28 @@ export async function runCommandReviewer(
     return assertReasonCoupling({ ...base, status: 'malformed', detail: truncate(parsed.error) });
   }
 
-  if (parsed.doc.sha !== opts.headSha) {
+  /**
+   * A `null` echo reaches here only when `inject_sha: true` let the schema
+   * accept a document without one, so rloop supplies the sha it spawned the
+   * process with. Note what that gives up and what it does not: the echo's
+   * job was to catch a CACHED document, and a provider rloop launched in this
+   * invocation cannot hand back a document from a previous one unless it
+   * caches internally — which is precisely the case the config author opts
+   * out of checking. What still holds either way is the binding to the
+   * commit, which was never the echo's doing: rloop refuses to run against a
+   * dirty worktree, so "the tree" and "that commit" are the same bytes.
+   *
+   * An echo that is present and WRONG is still stale, injection or not. The
+   * relaxation is "you need not copy the sha", never "any sha will do".
+   */
+  const reviewedSha = parsed.doc.sha ?? opts.headSha;
+  if (reviewedSha !== opts.headSha) {
     return assertReasonCoupling({
       ...base,
       status: 'stale',
-      sha: parsed.doc.sha,
+      sha: reviewedSha,
       detail:
-        `reviewed ${short(parsed.doc.sha)} but head is ${short(opts.headSha)} — ` +
+        `reviewed ${short(reviewedSha)} but head is ${short(opts.headSha)} — ` +
         `a cached or stale run`,
     });
   }
@@ -148,7 +201,7 @@ export async function runCommandReviewer(
       ...base,
       status: 'unavailable',
       unavailableReason: 'contradicted',
-      sha: parsed.doc.sha,
+      sha: reviewedSha,
       findings,
       detail:
         `exited ${run.exitCode} but its document reports no blocking findings — the ` +
@@ -157,23 +210,83 @@ export async function runCommandReviewer(
     });
   }
 
+  /**
+   * A partial review may never be `clean`.
+   *
+   * This check lives HERE, and that placement is the whole reason it is
+   * rloop's job rather than the provider's. A provider guarding its own
+   * truncation counts findings BEFORE `dismiss:` is applied, while the
+   * decision that matters is made AFTER — so a truncated diff yielding one
+   * critical finding that a dismissal then removes leaves the provider
+   * exiting 0 (it found something) and rloop seeing nothing blocking. Result:
+   * a partial review reported `clean`, from two pieces of logic that were
+   * each individually right. Only rloop knows what survived dismissal, so
+   * only rloop can key on it.
+   *
+   * Blocking findings are not overridden: an incomplete review that found a
+   * blocker has still found a blocker, and reporting `findings` sends the
+   * author to fix it. It is the merge-permitting direction that has to be
+   * withheld.
+   */
+  if (blocking.length === 0 && opts.diff?.truncated) {
+    return assertReasonCoupling({
+      ...base,
+      status: 'unavailable',
+      unavailableReason: 'incomplete',
+      sha: reviewedSha,
+      findings,
+      detail:
+        `the diff was truncated at ${opts.diff.bytes} bytes, so the reviewer saw only part ` +
+        `of the change and found nothing blocking in it. Raise diff_max_bytes for "${rev.name}", ` +
+        `or split the PR`,
+    });
+  }
+
   // A dismissal that matches nothing is usually a finding that was genuinely
-  // fixed, so this is a warning rather than an error — erroring would punish
-  // the good outcome. It is never SILENT: an accumulating dismissal list is
-  // how a future real finding gets pre-suppressed by accident.
+  // fixed. It is a warning rather than an error — erroring would punish the
+  // good outcome — but never SILENT: an accumulating dismissal list is how a
+  // future real finding gets pre-suppressed by accident.
+  //
+  // NOT phrased as an instruction to delete, which is what it used to say.
+  // "(delete them)" is sound advice for a deterministic provider and wrong
+  // for a model, whose findings come and go between runs on identical input:
+  // a dismissal that missed today may be the only thing standing between the
+  // same finding and a blocked merge tomorrow, and a reader who followed the
+  // imperative made a change that breaks later.
   const seen = new Set(findings.map((f) => f.fingerprint));
   const unmatched = rev.dismiss.filter((d) => !seen.has(d.fingerprint)).map((d) => d.fingerprint);
-  const detail =
-    unmatched.length > 0
-      ? `dismissals matching nothing at head (delete them): ${unmatched.join(', ')}`
-      : null;
+  const detail = unmatched.length > 0 ? unmatchedDetail(unmatched, findings) : null;
 
   return assertReasonCoupling({
     ...base,
     status: blocking.length > 0 ? 'findings' : 'clean',
-    sha: parsed.doc.sha,
+    sha: reviewedSha,
     findings,
     detail,
     findingsReason: blocking.length > 0 ? 'provider_findings' : null,
   });
+}
+
+/**
+ * Why a dismissal missed, when rloop can tell.
+ *
+ * The interesting case is a provider whose findings carry no `id`. Identity
+ * then falls back to `path` + normalized `title` (see `fingerprint.ts`), which
+ * is stable for a linter with fixed rule text and is NOT stable for a model:
+ * one defect reworded across three runs is three fingerprints, so every
+ * `dismiss:` entry silently stops matching while the config still looks
+ * configured. That is worth naming at the moment of the miss, because it is
+ * indistinguishable by inspection from the healthy case where the finding was
+ * simply fixed.
+ */
+function unmatchedDetail(unmatched: string[], findings: Finding[]): string {
+  const lead =
+    `dismissals matching nothing at head: ${unmatched.join(', ')} — either the finding ` +
+    `is fixed, or it did not recur this run`;
+  if (findings.length === 0 || findings.some((f) => f.id !== null)) return lead;
+  return (
+    `${lead}. This provider emitted ${findings.length} finding(s) and none carried an "id", ` +
+    `so their fingerprints come from the title text — a provider that rewords a finding ` +
+    `between runs cannot be dismissed reliably until it emits stable ids`
+  );
 }
