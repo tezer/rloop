@@ -477,7 +477,8 @@ the commit under review. That is the only variable it sets. In particular
 runs its own fetch, and decides for itself what to do when either fails.
 That is a real weakness rather than a design position — see
 [`examples/reviewers/README.md`](examples/reviewers/README.md) for the list of
-things it puts on you, and #7 for the work to move them.
+things it puts on you. Moving them into rloop is follow-up work; a first
+attempt was withdrawn from this release with nine defects against it.
 
 Pass the diff to your model on **stdin**, not as an argument: a single argv
 element is capped at `MAX_ARG_STRLEN` (131072 bytes on a 4K-page Linux, about
@@ -1208,7 +1209,7 @@ of.
 | `src/config.ts` | Config schema + validation (zod) |
 | `src/evidence.ts` | Marker matching — the testable core |
 | `src/gate.ts` | Runner: process control, SHA binding, path conditions |
-| `src/reviewers/` | Command reviewers: the diff handed over, the document read back |
+| `src/reviewers/` | Command reviewers: the provider spawned, the document read back |
 | `test/fixtures/` | Golden logs, including a real masked failure |
 | `examples/` | Ready-to-copy configs |
 | `examples/reviewers/` | A complete model-backed provider, and the traps it avoids |

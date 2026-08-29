@@ -8,17 +8,27 @@ currently owns none of them.**
 That is a statement about the current release, not a design position. An
 attempt to move four of them into rloop was written, reviewed, and **withdrawn
 from 0.4.0** with nine defects against it, every one in the git-interaction
-layer it added. The work is tracked in #7. Until it lands, the list below is
-yours.
+layer it added. Until a second attempt lands, the list below is yours.
 
 ## What rloop sets
 
 | Variable | Value |
 |---|---|
-| `RLOOP_HEAD_SHA` | the commit under review |
+| `RLOOP_HEAD_SHA` | the commit under review — the **forge's** PR head |
 
 That is the whole list. Your provider derives its own base and produces its
 own diff.
+
+Diff `$RLOOP_HEAD_SHA`, not `HEAD`. They are not the same: local `HEAD` is
+whatever is checked out, and in an agent loop it routinely differs (a commit
+made but not pushed, a stale checkout, a push from elsewhere). Naming the sha
+also fails safe — if it is not present locally, git errors and your provider
+exits non-zero.
+
+`codex-review.sh` takes two knobs of its own, `REVIEW_BASE_BRANCH` (default
+`main`) and `REVIEW_MAX_DIFF_BYTES` (default 400000). They are deliberately
+**not** `RLOOP_`-prefixed: a variable that looks like rloop's reads as though
+rloop validates it, and rloop has never heard of them.
 
 ## The config
 
@@ -30,8 +40,10 @@ reviewers:
     timeout_seconds: 900
 
     # The provider does not echo the sha; rloop supplies it. Safe here because
-    # this provider reads a diff of COMMITTED state. Leave it off for a
-    # provider that reads the working tree — see the main README.
+    # the script diffs $RLOOP_HEAD_SHA specifically — not "because it reads
+    # committed state", which is necessary but not sufficient: it has to be
+    # the RIGHT commit. Leave it off for a provider that diffs plain HEAD or
+    # reads the working tree.
     inject_sha: true
 ```
 
@@ -48,15 +60,20 @@ opportunistic update, which needs `remote.origin.fetch` configured. In a
 worktree or a CI checkout where it is not, use the explicit refspec
 `+refs/heads/main:refs/remotes/origin/main`.)
 
-**2. Diff from the merge base — yours.** Use three-dot (`base...HEAD`). A
-two-dot diff against a base that has moved presents the base's own new commits
-as reverts by your branch.
+**2. Diff from the merge base — yours.** Use three-dot
+(`origin/<base>...$RLOOP_HEAD_SHA`). A two-dot diff against a base that has
+moved presents the base's own new commits as reverts by your branch.
 
 **3. A diff you could not read in full must not report clean — yours.** If your
 model hits its context limit, or you capped the diff, the review covered part
-of the change. **Exit non-zero.** rloop's contract turns "no blocking findings
-+ non-zero exit" into `unavailable`, which blocks — that is the only lever you
-have here.
+of the change. **Exit non-zero before printing anything**, which rloop
+classifies `unavailable` (`crashed`: a non-zero exit with no usable document).
+That is the only lever you have here. Note it is not the `contradicted` rule —
+that one needs a parseable document *alongside* the failure. Both block.
+
+Validate your own numeric knobs while you are at it: `set -e` does not apply
+inside an `if` condition, so `[ "$n" -gt "$MAX" ]` with a non-numeric `$MAX`
+returns 2, the `if` reads false, and your size guard silently does nothing.
 
 **4. Do not key that decision on your own finding count — structural.** rloop
 applies `dismiss:` *after* your provider exits. So a partial review that found
@@ -72,8 +89,14 @@ model are not stable — one defect came back worded three ways across three run
 while this example was being written, which is three fingerprints and three
 dead `dismiss:` entries, failing silently while the config still looks
 configured. Ask the model for a slug naming the *defect*, not its sentence
-about the defect. rloop says so when a dismissal misses and the findings
-carried no ids.
+about the defect, and tell it two findings must never share an id.
+
+rloop helps at both ends, but only after the fact. When a dismissal matches
+nothing it says how many of the run's findings carried no `id`. And when a
+dismissal's fingerprint matches **more than one** finding it **refuses the
+dismissal** rather than applying it — two different defects that a model worded
+the same way in the same file collapse onto one fingerprint, and one `dismiss:`
+entry would otherwise suppress both and report `clean` with no output at all.
 
 ## `set -o pipefail`, and the case it actually covers
 

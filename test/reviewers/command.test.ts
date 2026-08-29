@@ -216,7 +216,76 @@ describe('runCommandReviewer', () => {
     const r = await go('one-critical-idless.mjs', [
       { fingerprint: 'deadbeef', reason: 'was fixed' },
     ]);
-    expect(r.detail).toMatch(/none carried an "id"/);
+    expect(r.detail).toMatch(/1 of 1 finding\(s\) carried no "id"/);
+  });
+
+  it('warns about id-less findings even when SOME findings carry an id', async () => {
+    // The predicate used to be `findings.some((f) => f.id !== null)`, which
+    // went quiet the moment one finding had an id — so a model that managed
+    // an id for a minor and dropped it for the critical got no warning about
+    // the one that matters. Mixed output is the EXPECTED shape from a model,
+    // not an edge case, so the homogeneous fixtures above cannot pin this.
+    const r = await go('mixed-ids.mjs', [{ fingerprint: 'deadbeef', reason: 'was fixed' }]);
+    expect(r.detail).toMatch(/1 of 2 finding\(s\) carried no "id"/);
+  });
+
+  describe('a dismissal whose fingerprint matches more than one finding', () => {
+    // Fingerprints are not unique by construction: without an `id`, identity
+    // is path + normalized title, so two DIFFERENT defects in one file that a
+    // model words the same way collapse onto one fingerprint. A dismissal
+    // written for the first would otherwise silently suppress the second —
+    // and because the fingerprint DID match, the unmatched-dismissal warning
+    // cannot fire either. Measured before the fix: `clean`, `detail: null`.
+    const fpOf = async () => (await go('two-idless-same-title.mjs')).findings[0].fingerprint;
+
+    it('is REFUSED, so the findings still block', async () => {
+      const r = await go('two-idless-same-title.mjs', [
+        { fingerprint: await fpOf(), reason: 'checked the first one' },
+      ]);
+      expect(r.status).toBe('findings');
+      expect(r.findings.every((f) => !f.dismissed)).toBe(true);
+    });
+
+    it('says so, rather than passing silently', async () => {
+      // The pre-fix outcome was merge-permitting with NO output of any kind,
+      // which is the worst shape a failure can take in this tool.
+      const r = await go('two-idless-same-title.mjs', [
+        { fingerprint: await fpOf(), reason: 'checked the first one' },
+      ]);
+      expect(r.detail).toMatch(/REFUSED/);
+      expect(r.detail).toMatch(/more than one finding/);
+    });
+
+    it('still lets a dismissal that matches exactly one finding through', async () => {
+      // The other half: refusing over-matches must not break the normal case.
+      const first = await go('findings.mjs');
+      const critical = first.findings.find((f) => f.severity === 'critical')!;
+      const r = await go('findings.mjs', [
+        { fingerprint: critical.fingerprint, reason: 'guard is in the caller' },
+      ]);
+      expect(r.status).toBe('clean');
+    });
+  });
+
+  describe("the provider's stderr", () => {
+    // stderr is frequently the ONLY diagnosis of a failed model call, and the
+    // shipped example tells providers to narrate there. It used to reach the
+    // operator on `crashed` alone — so the two paths a provider is most likely
+    // to reach dropped it.
+    it('reaches the operator on `contradicted`', async () => {
+      // The path `set -o pipefail` exists to produce: a usable document AND a
+      // failure. Without the snippet the operator gets a generic contradiction
+      // sentence and loses the actual cause.
+      const r = await go('clean-exit-1-stderr.mjs');
+      expect(r.unavailableReason).toBe('contradicted');
+      expect(r.detail).toMatch(/context_length_exceeded/);
+    });
+
+    it('reaches the operator on `malformed`', async () => {
+      const r = await go('junk-exit-zero-stderr.mjs');
+      expect(r.status).toBe('malformed');
+      expect(r.detail).toMatch(/auth token expired/);
+    });
   });
 
   it('stays quiet about ids when the provider does emit them', async () => {

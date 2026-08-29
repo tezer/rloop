@@ -220,7 +220,6 @@ reviewers:
     ).toThrow();
   });
 
-
   it('defaults inject_sha off, so the sha echo stays required unless asked', () => {
     // OFF by default because it RELAXES a check. A relaxation that arrives by
     // surprise in a config that did not ask for it is the wrong direction for

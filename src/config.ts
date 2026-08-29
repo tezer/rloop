@@ -270,7 +270,6 @@ const commandReviewerSchema = z
     timeout_seconds: z.number().int().positive().max(3600).default(600),
     dismiss: z.array(dismissalSchema).default([]),
 
-
     /**
      * Let rloop supply `sha` when the document omits it.
      *
