@@ -554,9 +554,12 @@ Understand what it gives up: the echo's job was to catch a *cached* document,
 and a provider rloop spawned in this invocation can only produce one by
 caching internally. That is the case you are opting out of checking.
 
-And note the interaction with the paragraph above. For a provider that reads
-**committed** state, nothing is lost — rloop generated the invocation, from
-this commit, now. For one that reads the **working tree**, the echo was the
+And note the interaction with the paragraph above. "Reads committed state" is
+NOT the safe condition — a provider can read the wrong committed state just as
+easily, by diffing plain `HEAD` when `RLOOP_HEAD_SHA` is the forge's PR head
+and the local checkout has drifted. The safe condition is narrower: the
+provider reviews **`$RLOOP_HEAD_SHA` specifically**, or fails trying. For one
+that reads the **working tree**, the echo was the
 last independent check that it reviewed the commit rloop is about to name, and
 relaxing it means `pr status` can render that reviewer clean at a commit it did
 not review. The merge is still blocked (void gates, or a sha mismatch), but the

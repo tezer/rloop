@@ -162,6 +162,15 @@ describe('pr_status — degraded field', () => {
     )?.message;
     expect(message).toMatch(/skipped/);
     expect(message).not.toMatch(/--only/);
+
+    // The SIBLING blocker had the identical defect and was missed by the
+    // first pass at this fix. `prStatus` synthesises a 40-zero sha, which
+    // never equals the PR head, so `sha_mismatch_gates` fired with "Gates ran
+    // on 0000000" — a run that never happened, at a commit that does not
+    // exist. `gates_not_green` already blocks and says the true thing.
+    const codes = out.decision.blockers.map((b: { code: string }) => b.code);
+    expect(codes).toContain('gates_not_green');
+    expect(codes).not.toContain('sha_mismatch_gates');
   });
 
   it('is populated when a command reviewer cannot run', async () => {

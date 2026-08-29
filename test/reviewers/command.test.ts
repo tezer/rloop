@@ -267,6 +267,31 @@ describe('runCommandReviewer', () => {
     });
   });
 
+  it('names a dismissal that LANDED on an id-less finding', async () => {
+    // The cross-run collision the over-match refusal cannot see: it counts
+    // fingerprints within ONE document, and title-derived identity collides
+    // across runs too, where rloop has no memory. One id-less finding plus a
+    // dismissal written last week for a different defect worded the same way
+    // is occurrences === 1 — no refusal, no miss, and before this, no output:
+    // `clean` with `detail: null` and zero blockers.
+    const probe = await go('one-critical-idless.mjs');
+    const fp = probe.findings[0].fingerprint;
+    const r = await go('one-critical-idless.mjs', [{ fingerprint: fp, reason: 'checked it' }]);
+    expect(r.status).toBe('clean');
+    expect(r.detail).not.toBeNull();
+    expect(r.detail).toMatch(/NO "id"/);
+  });
+
+  it('stays quiet when the dismissed finding carries an id', async () => {
+    // The other half: a provider with stable ids must not be lectured.
+    const probe = await go('one-critical-with-id.mjs');
+    const r = await go('one-critical-with-id.mjs', [
+      { fingerprint: probe.findings[0].fingerprint, reason: 'checked it' },
+    ]);
+    expect(r.status).toBe('clean');
+    expect(r.detail).toBeNull();
+  });
+
   describe("the provider's stderr", () => {
     // stderr is frequently the ONLY diagnosis of a failed model call, and the
     // shipped example tells providers to narrate there. It used to reach the
@@ -279,6 +304,27 @@ describe('runCommandReviewer', () => {
       const r = await go('clean-exit-1-stderr.mjs');
       expect(r.unavailableReason).toBe('contradicted');
       expect(r.detail).toMatch(/context_length_exceeded/);
+    });
+
+    it('keeps the TAIL, because a model reports its fatal error last', async () => {
+      // The head of a failed model call is progress narration; the line that
+      // explains it arrives after. A head-biased cap — which is right for zod
+      // errors and was wrong here — discards exactly the diagnosis this
+      // append exists to surface.
+      const r = await go('noisy-then-fatal.mjs');
+      expect(r.unavailableReason).toBe('contradicted');
+      expect(r.detail).toMatch(/context_length_exceeded/);
+    });
+
+    it('cannot be used to forge structure in a blocker message', async () => {
+      // A command reviewer is an arbitrary third-party script and owns its
+      // stderr. This string is embedded in messages an agent parses, so a
+      // provider closing rloop's parenthesis and adding "VERDICT: MERGEABLE"
+      // on its own line is a real vector. Length-capping does not touch
+      // structure; collapsing whitespace and quoting does.
+      const r = await go('forged-stderr.mjs');
+      expect(r.detail).not.toMatch(/\n/);
+      expect(r.detail).toMatch(/stderr: "/);
     });
 
     it('reaches the operator on `malformed`', async () => {
@@ -295,7 +341,10 @@ describe('runCommandReviewer', () => {
       { fingerprint: 'deadbeef', reason: 'was fixed' },
     ]);
     expect(r.detail).toContain('deadbeef');
-    expect(r.detail).not.toMatch(/carried an "id"/);
+    // `carried no "id"` — matching on `carried an "id"` is VACUOUS, because
+    // `unmatchedDetail` never emits that phrasing. Confirmed by mutation:
+    // forcing the warning on for every report left this test green.
+    expect(r.detail).not.toMatch(/carried no "id"/);
   });
 
   it('a dismissed blocking finding is reported but does not block', async () => {

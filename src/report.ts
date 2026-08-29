@@ -175,16 +175,20 @@ export function formatRun(run: GateRunResult): string {
   const passed = run.gates.filter((g) => g.status === 'pass').length;
   const total = run.gates.length;
 
-  if (run.invalidatedBy === 'dirty_worktree') {
-    lines.push(
-      red(bold('VOID')) +
-        ` — worktree was dirty. These gates did not verify ${run.sha.slice(0, 7)}. Do not merge.`,
-    );
-  } else if (run.invalidatedBy === 'head_moved') {
-    lines.push(
-      red(bold('VOID')) +
-        ` — HEAD moved during the run. The verdict is not bound to any commit. Do not merge.`,
-    );
+  // EXHAUSTIVE over `invalidatedBy`, so a fourth member is a compile error
+  // rather than a silent fall-through to PARTIAL or GREEN. `gates_skipped` was
+  // added without one and landed on "PARTIAL — 0 selected gate(s) passed" —
+  // the same false "--only" sentence that was fixed in merge-gate.ts and left
+  // stranded here. `formatRun` is exported from src/index.ts, so a library
+  // consumer can hand it any GateRunResult.
+  const VOID_REASON: Record<NonNullable<GateRunResult['invalidatedBy']>, string> = {
+    dirty_worktree: `worktree was dirty. These gates did not verify ${run.sha.slice(0, 7)}. Do not merge.`,
+    head_moved: 'HEAD moved during the run. The verdict is not bound to any commit. Do not merge.',
+    gates_skipped: 'gates were skipped. Nothing was checked, which is not the same as nothing being wrong. Do not merge.',
+  };
+
+  if (run.invalidatedBy !== null) {
+    lines.push(red(bold('VOID')) + ` — ${VOID_REASON[run.invalidatedBy]}`);
   } else if (errored > 0) {
     lines.push(
       yellow(bold('UNRESOLVED')) +
@@ -199,6 +203,14 @@ export function formatRun(run: GateRunResult): string {
     );
   } else if (passed === 0) {
     lines.push(yellow(bold('EMPTY')) + ` — no gate actually ran. Nothing was proven.`);
+  } else if (!run.green) {
+    // `green` is computed by `runGates` and is the authoritative verdict. This
+    // branch used to be absent, so the headline was re-derived from the gate
+    // array alone and could print GREEN over a run whose own flag said false.
+    lines.push(
+      yellow(bold('UNRESOLVED')) +
+        ` — gates passed but the run is not green. Do not merge.`,
+    );
   } else {
     lines.push(
       green(bold('GREEN')) + ` — ${passed} gate(s) proved on ${run.sha.slice(0, 7)}` + dim(` in ${secs(run.durationMs)}`),

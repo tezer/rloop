@@ -30,17 +30,49 @@ MAX_BYTES="${REVIEW_MAX_DIFF_BYTES:-400000}"
 # reads it as false, and the size guard is skipped entirely — a partial review
 # reported as a pass, arriving through the guard written to prevent it.
 # Measured with `REVIEW_MAX_DIFF_BYTES=400k`. Validate it here instead.
+# The length bound is not padding: `case` only asks "is it all digits", and
+# `[ x -gt y ]` also errors on a digit string too large for the shell's
+# integer type. A fat-fingered run of zeros past 2^63-1 reproduces the exact
+# hole this block exists to close. Measured with 22 digits.
 case "$MAX_BYTES" in
-  '' | *[!0-9]*)
-    echo "refusing: REVIEW_MAX_DIFF_BYTES must be a plain byte count, got '${MAX_BYTES}'" >&2
+  '' | *[!0-9]* | ????????????????????*)
+    echo "refusing: REVIEW_MAX_DIFF_BYTES must be a plain byte count under 20 digits, got '${MAX_BYTES}'" >&2
     exit 1
     ;;
 esac
 
-# Resolve relative to THIS FILE, not to $0: a copier who puts the script on
-# PATH or behind a symlink otherwise gets `dirname` of the wrapper.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The schema must live beside this script. `BASH_SOURCE[0]` rather than `$0`
+# only helps if the file is `source`d — for a symlink or a PATH lookup the two
+# are IDENTICAL and neither resolves the link, which an earlier version of this
+# comment claimed they did. So resolve the link explicitly, and then check the
+# file is actually there: leaving that to `codex --output-schema` delegates
+# whether this fails open or closed to a tool we do not control.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  LINK="$(readlink "$SCRIPT_PATH")"
+  case "$LINK" in
+    /*) SCRIPT_PATH="$LINK" ;;
+    *) SCRIPT_PATH="$(dirname "$SCRIPT_PATH")/$LINK" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 SCHEMA="$SCRIPT_DIR/finding-schema.json"
+if [ ! -f "$SCHEMA" ]; then
+  echo "refusing: no finding-schema.json beside ${SCRIPT_PATH}" >&2
+  exit 1
+fi
+
+# `set -u` catches an UNSET RLOOP_HEAD_SHA; it does not catch an EMPTY one, and
+# `git diff A...` with an empty right-hand side silently means `A...HEAD` — so
+# the script would review local HEAD, exit 0, and (under inject_sha) get the
+# forge's sha stamped on it. Exactly the defect naming the sha was meant to
+# remove. Not reachable through rloop today, but this file gets copied.
+case "${RLOOP_HEAD_SHA:-}" in
+  '' | *[!0-9a-fA-F]*)
+    echo "refusing: RLOOP_HEAD_SHA must be a hex commit sha, got '${RLOOP_HEAD_SHA:-}'" >&2
+    exit 1
+    ;;
+esac
 
 # Narration goes to stderr. rloop captures the two streams separately, and
 # anything on stdout that is not the JSON document corrupts it.
@@ -52,12 +84,21 @@ echo "reviewing ${BASE_BRANCH}...${RLOOP_HEAD_SHA}" >&2
 # into a non-zero exit with no stdout, which rloop classifies `unavailable`
 # (`crashed`). The explicit refspec rather than the bare `git fetch origin
 # main` form: the bare form does update the tracking ref, but only via git's
-# opportunistic update, which needs a `remote.origin.fetch` refspec that covers
-# the branch. A `--single-branch` or shallow clone — what `actions/checkout`
-# produces — sets a narrow, branch-specific one, and then the bare form does
-# not even create the ref. (A linked `git worktree` is FINE: it shares the
-# parent's config and inherits the refspec. An earlier draft of this comment
-# said otherwise; measured.)
+# opportunistic update, which needs a `remote.origin.fetch` refspec COVERING
+# THE BASE BRANCH. That is the whole rule — not a property of the clone type.
+# `--single-branch --branch feature` sets `+refs/heads/feature:…`, which does
+# not cover `main`, and the bare form then never creates `origin/main` at all.
+# (`--single-branch --branch main` does cover it, and works. A linked
+# `git worktree` is also fine — it shares the parent's config and inherits the
+# refspec; an earlier draft of this comment claimed otherwise, wrongly.)
+#
+# SHALLOWNESS IS A SEPARATE REQUIREMENT and this refspec does not fix it.
+# `actions/checkout` defaults to `fetch-depth: 1`; the explicit fetch below
+# then succeeds and creates a correct `origin/main`, and the three-dot diff on
+# the next statement still dies with `fatal: … no merge base`, because there is
+# no shared history to find one in. Measured. Use `fetch-depth: 0` (or
+# `git fetch --unshallow`) as well — this reviewer needs real history, and it
+# fails loudly rather than quietly if you do not.
 git fetch --no-tags --quiet origin \
   "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" >&2
 

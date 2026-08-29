@@ -56,11 +56,19 @@ parses, still describes real code, and is merely about a base nobody is merging
 into. A reviewer handed that reports `clean` with total confidence. rloop
 cannot see the difference. (`git fetch origin main` *does* update
 `refs/remotes/origin/main` in a normal clone — verified — but only via git's
-opportunistic update, which needs a `remote.origin.fetch` refspec covering the
-branch. A `--single-branch` or shallow clone — what `actions/checkout` produces
-— sets a narrow one, and then the bare form does not even create the ref; use
-the explicit `+refs/heads/main:refs/remotes/origin/main`. A linked
-`git worktree` is fine, it inherits the parent's config.)
+opportunistic update, which needs a `remote.origin.fetch` refspec **covering
+the base branch** — that is the whole rule, not a property of the clone type.
+`--single-branch --branch feature` does not cover `main`, so the bare form
+never creates `origin/main`; use the explicit
+`+refs/heads/main:refs/remotes/origin/main`. A linked `git worktree` is fine,
+it inherits the parent's config.)
+
+**Shallowness is a separate requirement, and the refspec does not fix it.**
+`actions/checkout` defaults to `fetch-depth: 1`. The explicit fetch then
+succeeds and creates a correct `origin/main`, and the three-dot diff still
+fails with `fatal: … no merge base` — there is no shared history to find one
+in. Set `fetch-depth: 0`, or `git fetch --unshallow`. This one fails loudly, so
+it costs you a red run rather than a wrong verdict.
 
 **2. Diff from the merge base — yours.** Use three-dot
 (`origin/<base>...$RLOOP_HEAD_SHA`). A two-dot diff against a base that has

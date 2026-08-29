@@ -132,7 +132,15 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
   }
 
   // Three-way SHA agreement, part one: gates vs PR head.
-  if (gateRun.sha !== pr.headSha) {
+  //
+  // Skipped gates are exempt from the SENTENCE, not from blocking. `prStatus`
+  // synthesises `sha: '0'.repeat(40)` for that path, which never equals
+  // `pr.headSha`, so this fired with "Gates ran on 0000000" — false in exactly
+  // the way "run was partial (--only)" was false one blocker up, and left
+  // behind when that one was fixed. It sends an operator looking for a gate
+  // run that never happened, at a commit that does not exist. `gates_not_green`
+  // already blocks this path and says the true thing.
+  if (gateRun.invalidatedBy !== 'gates_skipped' && gateRun.sha !== pr.headSha) {
     blockers.push({
       code: 'sha_mismatch_gates',
       message:
