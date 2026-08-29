@@ -292,6 +292,41 @@ describe('runCommandReviewer', () => {
     expect(r.detail).toBeNull();
   });
 
+  it('caps a hostile finding title in the id-less dismissal note', async () => {
+    // `truncate`'s second parameter had no fixture over 60 chars, so ignoring
+    // it left the suite green — and this note carries provider-controlled
+    // text onto the one merge-PERMITTING path any of it reaches.
+    const probe = await go('long-title-idless.mjs');
+    const r = await go('long-title-idless.mjs', [
+      { fingerprint: probe.findings[0].fingerprint, reason: 'checked it' },
+    ]);
+    expect(r.detail).toMatch(/…/);
+    expect(r.detail!.length).toBeLessThan(500);
+    // Quoted, for the same reason stderr is: this is a title the provider chose.
+    expect(r.detail).toMatch(/"T+…"/);
+  });
+
+  it('names the suspect fingerprint, not just the fact that one exists', async () => {
+    // Deleting the `fingerprint (title)` listing used to survive: the test
+    // asserted only `/NO "id"/`, and the listing is the actionable half.
+    const probe = await go('one-critical-idless.mjs');
+    const fp = probe.findings[0].fingerprint;
+    const r = await go('one-critical-idless.mjs', [{ fingerprint: fp, reason: 'checked it' }]);
+    expect(r.detail).toContain(fp);
+  });
+
+  it('keeps dismissal notes on the `contradicted` early return', async () => {
+    // That return exits before the normal note-building, and the refusal note
+    // was threaded through it while its twin — a dismissal landing on an
+    // id-less finding — was left behind. Same class of config defect; losing
+    // it hides a config problem behind a run problem.
+    const probe = await go('contradicted-overmatch.mjs');
+    const fp = probe.findings[0].fingerprint;
+    const r = await go('contradicted-overmatch.mjs', [{ fingerprint: fp, reason: 'checked one' }]);
+    expect(r.unavailableReason).toBe('contradicted');
+    expect(r.detail).toMatch(/REFUSED/);
+  });
+
   describe("the provider's stderr", () => {
     // stderr is frequently the ONLY diagnosis of a failed model call, and the
     // shipped example tells providers to narrate there. It used to reach the
@@ -314,6 +349,17 @@ describe('runCommandReviewer', () => {
       const r = await go('noisy-then-fatal.mjs');
       expect(r.unavailableReason).toBe('contradicted');
       expect(r.detail).toMatch(/context_length_exceeded/);
+    });
+
+    it('ESCAPES a quote rather than merely wrapping in one', async () => {
+      // The distinction this pins: naive `\`"${snippet}"\`` also satisfies
+      // "starts with a quote" and "has no newline" (the whitespace collapse
+      // already removes newlines), so an earlier version of the test below
+      // passed with `JSON.stringify` replaced by string concatenation. A
+      // hostile provider emitting `"` closes a naive wrapper; only real
+      // escaping survives it.
+      const r = await go('forged-stderr.mjs');
+      expect(r.detail).toMatch(/\\"/);
     });
 
     it('cannot be used to forge structure in a blocker message', async () => {

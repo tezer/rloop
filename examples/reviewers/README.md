@@ -82,8 +82,12 @@ That is the only lever you have here. Note it is not the `contradicted` rule —
 that one needs a parseable document *alongside* the failure. Both block.
 
 Validate your own numeric knobs while you are at it: `set -e` does not apply
-inside an `if` condition, so `[ "$n" -gt "$MAX" ]` with a non-numeric `$MAX`
-returns 2, the `if` reads false, and your size guard silently does nothing.
+inside an `if` condition, so `[ "$n" -gt "$MAX" ]` with a `$MAX` the shell
+cannot compare returns 2, the `if` reads false, and your size guard silently
+does nothing. Two shapes reach that, not one — a non-numeric value, and a
+numeric value too large for the shell's integer type. Bounding the *length*
+is not enough either: `2^63-1` is itself 19 digits, so a 19-digit cap still
+admits values above it. Cap at 18.
 
 **4. Do not key that decision on your own finding count — structural.** rloop
 applies `dismiss:` *after* your provider exits. So a partial review that found

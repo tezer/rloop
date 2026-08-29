@@ -46,10 +46,10 @@ describe('formatRun', () => {
     ['gates_skipped', /gates were skipped/],
   ] as const)('renders VOID with a true reason for %s', (invalidatedBy, expected) => {
     // `gates_skipped` is the one this file was written for: it used to fall
-    // through to "PARTIAL — 0 selected gate(s) passed", the same false
-    // `--only` sentence that was fixed in merge-gate.ts and left stranded
-    // here. All three are asserted so the next member added is the only one
-    // that can be missing.
+    // through to "PARTIAL — 0 selected gate(s) passed" — the same false-flag
+    // defect merge-gate.ts named `--only` outright, in this file's own
+    // wording. All three are asserted so the next member added is the only
+    // one that can be missing.
     const out = formatRun(run({ green: false, invalidatedBy }));
     expect(out).toMatch(/VOID/);
     expect(out).toMatch(expected);

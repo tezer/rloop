@@ -238,8 +238,42 @@ gates:
       threads: [],
     });
     const message = d.blockers.find((b) => b.code === 'gates_not_green')?.message;
-    expect(message).toMatch(/skipped/);
-    expect(message).not.toMatch(/--only/);
+    // The full sentence: `/skipped/` alone also matches the generic fallback
+    // `run was void (gates_skipped)`, so it could not detect the special case
+    // being deleted.
+    expect(message).toContain('gates were skipped, so there is no gate evidence at all');
+    expect(message).not.toMatch(/--only|run was void/);
+  });
+
+  it('still blocks a sha mismatch when gates were skipped — only the sentence changes', () => {
+    // Guards the exported contract. Suppressing this blocker on the skipped
+    // path let a direct caller of `evaluateMergeGate` merge at a commit the
+    // gates never verified: green: true + gates_skipped + mismatched sha
+    // returned `allowed: true, blockers: []`. Measured before the fix.
+    const c = cfg();
+    const d = evaluateMergeGate({
+      cfg: c,
+      pr: pr(),
+      gateRun: greenRun({ sha: OLD, invalidatedBy: 'gates_skipped' }),
+      reviewerReports: [
+        assertReasonCoupling({
+          name: 'copilot-pull-request-reviewer',
+          kind: 'forge',
+          status: 'clean',
+          sha: HEAD,
+          findings: [],
+          detail: null,
+          findingsReason: null,
+          unavailableReason: null,
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    expect(codes(d)).toContain('sha_mismatch_gates');
+    expect(d.allowed).toBe(false);
+    const message = d.blockers.find((b) => b.code === 'sha_mismatch_gates')?.message;
+    expect(message).toContain('Gates were skipped');
   });
 
   it('blocks a void gate run (dirty worktree)', async () => {

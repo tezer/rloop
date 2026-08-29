@@ -959,7 +959,8 @@ PR #804 Migrate residual config-rot validators…
 
 BLOCKED — 4 condition(s) not met:
   ✗ [pr_not_open]         PR #804 is MERGED, not OPEN.
-  ✗ [sha_mismatch_gates]  Gates ran on 0000000 but PR head is 9dbe1e8.
+  ✗ [sha_mismatch_gates]  Gates were skipped, so nothing is bound to PR head
+                          9dbe1e8. There is no verified code to compare.
   …
 ```
 

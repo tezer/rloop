@@ -133,19 +133,28 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
 
   // Three-way SHA agreement, part one: gates vs PR head.
   //
-  // Skipped gates are exempt from the SENTENCE, not from blocking. `prStatus`
-  // synthesises `sha: '0'.repeat(40)` for that path, which never equals
-  // `pr.headSha`, so this fired with "Gates ran on 0000000" — false in exactly
-  // the way "run was partial (--only)" was false one blocker up, and left
-  // behind when that one was fixed. It sends an operator looking for a gate
-  // run that never happened, at a commit that does not exist. `gates_not_green`
-  // already blocks this path and says the true thing.
-  if (gateRun.invalidatedBy !== 'gates_skipped' && gateRun.sha !== pr.headSha) {
+  // Skipped gates change the SENTENCE and never the BLOCKER. A first attempt
+  // at this suppressed the blocker itself when `invalidatedBy` was
+  // `gates_skipped`, on the reasoning that `gates_not_green` already covers
+  // that path. It does — for the one in-tree caller. `evaluateMergeGate` is
+  // exported from src/index.ts, and a caller handing it `green: true` with
+  // `gates_skipped` and a mismatched sha got `allowed: true, blockers: []`:
+  // a merge permitted at a commit the gates did not verify, introduced while
+  // fixing a cosmetic message. Measured.
+  //
+  // The `reviewerReports.length === 0` guard twenty lines below states the
+  // standard this violated — "defends this function's own public contract,
+  // independent of any caller" — and the same commit applied it correctly in
+  // report.ts. Never trade a blocker for a nicer message.
+  if (gateRun.sha !== pr.headSha) {
     blockers.push({
       code: 'sha_mismatch_gates',
       message:
-        `Gates ran on ${short(gateRun.sha)} but PR head is ${short(pr.headSha)}. ` +
-        `The verified code is not the code that would merge.`,
+        gateRun.invalidatedBy === 'gates_skipped'
+          ? `Gates were skipped, so nothing is bound to PR head ${short(pr.headSha)}. ` +
+            `There is no verified code to compare.`
+          : `Gates ran on ${short(gateRun.sha)} but PR head is ${short(pr.headSha)}. ` +
+            `The verified code is not the code that would merge.`,
     });
   }
 

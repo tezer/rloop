@@ -178,8 +178,9 @@ export function formatRun(run: GateRunResult): string {
   // EXHAUSTIVE over `invalidatedBy`, so a fourth member is a compile error
   // rather than a silent fall-through to PARTIAL or GREEN. `gates_skipped` was
   // added without one and landed on "PARTIAL — 0 selected gate(s) passed" —
-  // the same false "--only" sentence that was fixed in merge-gate.ts and left
-  // stranded here. `formatRun` is exported from src/index.ts, so a library
+  // the same false-flag defect merge-gate.ts named `--only` outright, in this
+  // file's own wording. (Do not grep here for `--only`; that string was only
+  // ever in merge-gate.ts.) `formatRun` is exported from src/index.ts, so a library
   // consumer can hand it any GateRunResult.
   const VOID_REASON: Record<NonNullable<GateRunResult['invalidatedBy']>, string> = {
     dirty_worktree: `worktree was dirty. These gates did not verify ${run.sha.slice(0, 7)}. Do not merge.`,

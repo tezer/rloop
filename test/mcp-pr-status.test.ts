@@ -160,17 +160,27 @@ describe('pr_status — degraded field', () => {
     const message = out.decision.blockers.find(
       (b: { code: string }) => b.code === 'gates_not_green',
     )?.message;
-    expect(message).toMatch(/skipped/);
-    expect(message).not.toMatch(/--only/);
+    // The FULL sentence, not `/skipped/`. That pattern was vacuous: deleting
+    // the special case falls through to `run was void (gates_skipped)`, which
+    // interpolates the enum member name and matches `/skipped/` too — so the
+    // assertion passed with the behaviour it names removed.
+    expect(message).toContain('gates were skipped, so there is no gate evidence at all');
+    expect(message).not.toMatch(/--only|run was void/);
 
-    // The SIBLING blocker had the identical defect and was missed by the
-    // first pass at this fix. `prStatus` synthesises a 40-zero sha, which
-    // never equals the PR head, so `sha_mismatch_gates` fired with "Gates ran
-    // on 0000000" — a run that never happened, at a commit that does not
-    // exist. `gates_not_green` already blocks and says the true thing.
+    // The SIBLING blocker still fires, and must. A first pass at this
+    // SUPPRESSED `sha_mismatch_gates` on the skipped path, which opened a
+    // merge-permitting hole for any direct caller of the exported
+    // `evaluateMergeGate` (green: true + gates_skipped + mismatched sha →
+    // allowed, zero blockers). The fix is to correct the SENTENCE and keep
+    // the blocker.
     const codes = out.decision.blockers.map((b: { code: string }) => b.code);
     expect(codes).toContain('gates_not_green');
-    expect(codes).not.toContain('sha_mismatch_gates');
+    expect(codes).toContain('sha_mismatch_gates');
+    const mismatch = out.decision.blockers.find(
+      (b: { code: string }) => b.code === 'sha_mismatch_gates',
+    )?.message;
+    expect(mismatch).toContain('Gates were skipped');
+    expect(mismatch).not.toMatch(/Gates ran on 0000000/);
   });
 
   it('is populated when a command reviewer cannot run', async () => {

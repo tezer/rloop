@@ -32,11 +32,17 @@ MAX_BYTES="${REVIEW_MAX_DIFF_BYTES:-400000}"
 # Measured with `REVIEW_MAX_DIFF_BYTES=400k`. Validate it here instead.
 # The length bound is not padding: `case` only asks "is it all digits", and
 # `[ x -gt y ]` also errors on a digit string too large for the shell's
-# integer type. A fat-fingered run of zeros past 2^63-1 reproduces the exact
-# hole this block exists to close. Measured with 22 digits.
+# integer type. A fat-fingered run of zeros reproduces the exact hole this
+# block exists to close.
+#
+# EIGHTEEN digits, not twenty. `2^63-1` is 9223372036854775807 — itself 19
+# digits — so a 19-digit bound still admits values above it: measured,
+# `9999999999999999999` is accepted and then makes `[ -gt ]` exit 2, which an
+# `if` reads as false. 18 digits caps at ~1e18, comfortably under, and is an
+# absurdly generous diff size either way.
 case "$MAX_BYTES" in
-  '' | *[!0-9]* | ????????????????????*)
-    echo "refusing: REVIEW_MAX_DIFF_BYTES must be a plain byte count under 20 digits, got '${MAX_BYTES}'" >&2
+  '' | *[!0-9]* | ???????????????????*)
+    echo "refusing: REVIEW_MAX_DIFF_BYTES must be a plain byte count under 19 digits, got '${MAX_BYTES}'" >&2
     exit 1
     ;;
 esac
@@ -48,7 +54,15 @@ esac
 # file is actually there: leaving that to `codex --output-schema` delegates
 # whether this fails open or closed to a tool we do not control.
 SCRIPT_PATH="${BASH_SOURCE[0]}"
+LINK_HOPS=0
 while [ -L "$SCRIPT_PATH" ]; do
+  LINK_HOPS=$((LINK_HOPS + 1))
+  if [ "$LINK_HOPS" -gt 40 ]; then
+    # A symlink cycle would otherwise spin until rloop's timeout_seconds kills
+    # the process group — fail-closed, but it burns the whole budget first.
+    echo "refusing: symlink loop resolving ${BASH_SOURCE[0]}" >&2
+    exit 1
+  fi
   LINK="$(readlink "$SCRIPT_PATH")"
   case "$LINK" in
     /*) SCRIPT_PATH="$LINK" ;;
