@@ -51,7 +51,7 @@ const short = (sha: string) => sha.slice(0, 7);
  *
  * Worth spelling out, because "re-request review" on its own sends the reader
  * at an API that can answer 200 and do nothing. Observed against GitHub
- * Copilot, on one repository, across two days:
+ * Copilot, on one repository, across three attempts spanning five days:
  *
  *   - 2026-08-25 — three successful requests on PR #4, each followed by a
  *     review. The `review_requested` events are in the timeline.
@@ -197,19 +197,22 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
         break;
       }
       case 'unavailable': {
-        // `unavailable` collapses four distinct causes (see UnavailableReason
+        // `unavailable` collapses three distinct causes (see UnavailableReason
         // in reviewers/types.ts). "Could not run" is only true for the first —
-        // the other three describe a process that DID run and even produced a
-        // document. Asserting "could not run" for those is self-contradictory
-        // when `detail` goes on to describe exit codes and documents.
+        // the other two describe a process that DID run. Only `contradicted`
+        // also produced a usable document; `crashed` is defined by output that
+        // could NOT be used, so do not claim a document for it. Asserting
+        // "could not run" for either is self-contradictory when `detail` goes
+        // on to describe an exit code.
+        //
+        // NOT exhaustive-checked: a new UnavailableReason silently lands on
+        // the `could not run` fallback. See the note on the type.
         const lead =
           r.unavailableReason === 'crashed'
             ? `Reviewer "${r.name}" ran but crashed before producing a usable review`
             : r.unavailableReason === 'contradicted'
               ? `Reviewer "${r.name}" ran and produced a document, but its own signals contradict each other`
-              : r.unavailableReason === 'incomplete'
-                ? `Reviewer "${r.name}" reviewed only part of the change, so its "nothing found" covers only part of the change`
-                : `Reviewer "${r.name}" could not run`;
+              : `Reviewer "${r.name}" could not run`;
         blockers.push({
           code: 'reviewer_unavailable',
           message: `${lead}: ${r.detail ?? 'no detail'}`,

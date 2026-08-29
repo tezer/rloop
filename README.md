@@ -458,10 +458,8 @@ reviewers:
 
   - name: local-review
     kind: command
-    run: my-review-script
+    run: my-review-script --base origin/main
     timeout_seconds: 600        # default; max 3600
-    needs_diff: true            # rloop fetches the base and writes the diff
-    diff_max_bytes: 400000      # optional cap; requires needs_diff
     inject_sha: true            # rloop supplies `sha`; see below
     dismiss:
       - fingerprint: a1b2c3d4
@@ -470,43 +468,16 @@ reviewers:
 
 A complete, commented model-backed provider lives in
 [`examples/reviewers/`](examples/reviewers/), along with the five safety
-properties this feature exists to take off your hands.
+properties a provider has to get right — **rloop does not own any of them
+yet**, and each one fails silently.
 
-### What rloop hands the provider
-
-rloop runs the command once, from the repo root, with these set:
-
-| Variable | Value | When |
-|---|---|---|
-| `RLOOP_HEAD_SHA` | the commit under review | always |
-| `RLOOP_BASE_REF` | e.g. `origin/main` — **already fetched** | `needs_diff: true` |
-| `RLOOP_DIFF_FILE` | absolute path to `git diff <base>...HEAD` | `needs_diff: true` |
-| `RLOOP_DIFF_BYTES` | size of that file | `needs_diff: true` |
-| `RLOOP_DIFF_TRUNCATED` | `1` if `diff_max_bytes` cut it short | `needs_diff: true` |
-
-`needs_diff` is off by default and has to be asked for, because turning it on
-makes a **failed fetch fatal** to that reviewer — and rloop cannot tell from
-the outside whether your `run:` line reads a diff at all. A reviewer that
-shells out to `npm audit` does not, and would otherwise be blocked in any
-checkout without an `origin` remote, for a resource it never wanted.
-
-Ask for it when the reviewer reviews a diff, and rloop takes over the parts
-that fail *silently*:
-
-- **the base is the PR's own**, not a config default or a guess;
-- **the tracking ref is fetched first**, and a failure is `unavailable`, not a
-  review of whatever `origin/main` happened to point at last week;
-- **the diff is three-dot**, from the merge base, so a base branch that moved
-  does not present its own new commits as reverts by your branch;
-- **a truncated diff can never be reported `clean`** (see below).
-
-A stale base is the worst of these because it is not detectably wrong: the
-diff still applies, still parses, still describes real code. It is merely
-about a base nobody is merging into, and the verdict comes back confident.
-
-The diff is written to a temp directory, never inside the worktree — a file
-written in the repo would make it dirty, and rloop refuses to run against a
-dirty worktree, so a reviewer would poison the very next invocation.
+rloop runs the command once, from the repo root, with `RLOOP_HEAD_SHA` set to
+the commit under review. That is the only variable it sets. In particular
+**rloop does not supply the diff**: your provider works out its own base,
+runs its own fetch, and decides for itself what to do when either fails.
+That is a real weakness rather than a design position — see
+[`examples/reviewers/README.md`](examples/reviewers/README.md) for the list of
+things it puts on you, and #7 for the work to move them.
 
 Pass the diff to your model on **stdin**, not as an argument: a single argv
 element is capped at `MAX_ARG_STRLEN` (131072 bytes on a 4K-page Linux, about
@@ -564,6 +535,12 @@ provider that inspects the former is inspecting the latter. The echo catches
 a *cached* run; the clean-tree requirement is what makes "ran now" mean "ran
 against this commit".
 
+Be precise about where that requirement actually lives, because it is easy to
+overstate: `isDirty` is called by **`runGates`**, which voids a gate run on a
+dirty tree. It is *not* called before collecting reviewers, and `--skip-gates`
+skips it entirely. So on a dirty tree the merge is still blocked — by the void
+gate run, in a different file — but the reviewer itself was not stopped.
+
 `inject_sha: true` drops the echo and lets rloop supply the sha it spawned the
 process with. Reach for it with a model-backed provider, where the
 alternatives are a post-processing step that grafts the value in or asking a
@@ -574,11 +551,19 @@ instead of at your prompt.
 
 Understand what it gives up: the echo's job was to catch a *cached* document,
 and a provider rloop spawned in this invocation can only produce one by
-caching internally. That is the case you are opting out of checking. What
-still holds is the binding to the commit, which was never the echo's doing —
-it is the clean-tree requirement above. And a document that *does* carry a
-`sha` still has to carry the right one: "you need not echo it" is not "any sha
-will do".
+caching internally. That is the case you are opting out of checking.
+
+And note the interaction with the paragraph above. For a provider that reads
+**committed** state, nothing is lost — rloop generated the invocation, from
+this commit, now. For one that reads the **working tree**, the echo was the
+last independent check that it reviewed the commit rloop is about to name, and
+relaxing it means `pr status` can render that reviewer clean at a commit it did
+not review. The merge is still blocked (void gates, or a sha mismatch), but the
+displayed verdict is wrong. **Leave `inject_sha` off for a worktree-reading
+provider.**
+
+A document that *does* carry a `sha` still has to carry the right one: "you
+need not echo it" is not "any sha will do".
 
 ### Classification
 
@@ -586,14 +571,12 @@ Order matters — this table is `runCommandReviewer`'s whole contract:
 
 | Condition | Status |
 |---|---|
-| `needs_diff` is set and no diff could be prepared | `unavailable` — never ran |
 | spawn failed, or timed out | `unavailable` — never ran |
 | output unusable (unparseable OR fails the document schema) AND exit != 0 | `unavailable` — crashed mid-review |
 | output unusable (unparseable OR fails the document schema) AND exit == 0 | `malformed` — ran fine, printed junk |
 | echoed `sha` != head | `stale` |
 | blocking findings present | `findings` — regardless of exit code |
 | no blocking findings AND exit != 0 | `unavailable` — the provider's own signals contradict each other |
-| no blocking findings AND the diff was truncated | `unavailable` — a partial review, reported as one |
 | no blocking findings AND exit == 0 | `clean` |
 
 The exit code is the provider's own verdict on whether it ran. rloop trusts
@@ -614,23 +597,14 @@ win by default. That is `unavailable`, with a detail explaining the
 contradiction, not a pass.
 
 Nothing on this list returns `clean` on a path where the review did not
-actually happen — including the case where it happened to only part of the
-change. A `diff_max_bytes` cap that fires means the reviewer saw a fraction of
-the diff, so its "I found nothing" is a statement about a fraction. Blocking
-findings are *not* overridden: an incomplete review that found a blocker has
-still found one, and you should go fix it. It is only the merge-permitting
-direction that gets withheld.
-
-**That check is rloop's job, not yours, and the reason is subtle enough to be
-worth stating.** A provider guarding its own truncation counts findings
-*before* `dismiss:` is applied; rloop decides *after*. So a truncated diff
-yielding one critical finding that a dismissal then removes leaves the
-provider exiting 0 (it found something — its own guard was satisfied) and
-rloop seeing nothing blocking. A partial review reported as `clean`, out of
-two pieces of individually correct logic. The general rule, which is worth
-carrying into any provider you write: **any provider logic keyed on "did I
-find something blocking" is keyed on the wrong number.** Only rloop knows what
-survived dismissal.
+actually happen — with one gap worth knowing, because rloop cannot see it: if
+your provider reviewed only *part* of the change (a model that hit its context
+limit, a diff you truncated yourself), rloop has no way to tell. **Any provider
+logic keyed on "did I find something blocking" is also keyed on the wrong
+number** — a provider counts findings before `dismiss:` is applied and rloop
+decides after, so a partial review whose one finding gets dismissed reads as
+`clean`. Until rloop owns the diff, exit non-zero when your review was
+incomplete and let the contradiction rule above block it.
 
 ### Severity and what blocks
 

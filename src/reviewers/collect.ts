@@ -1,8 +1,6 @@
 import type { RloopConfig } from '../config.js';
 import { matchesReviewer, type ReviewVerdict } from '../forge/types.js';
-import { fetchBranch } from '../git.js';
 import { runCommandReviewer } from './command.js';
-import { prepareDiff, type DiffContext } from './diff.js';
 import { assertReasonCoupling, type ReviewerReport } from './types.js';
 
 export type DegradedReason = 'not_configured' | 'unavailable' | 'malformed';
@@ -17,88 +15,34 @@ export interface Degradation {
 const short = (sha: string) => sha.slice(0, 7);
 
 /**
- * git writes multi-line failures ("fatal: 'origin' does not appear…" followed
- * by "fatal: Could not read from remote repository." and three lines of
- * advice). Only the first line diagnoses; the rest would push the actionable
- * part of a blocker message off the end of a terminal.
- */
-const firstLine = (s: string) => s.trim().split('\n').find((l) => l.trim().length > 0) ?? s.trim();
-
-/**
  * One report per configured reviewer, in config order.
  *
  * Sequential by design. Parallelism is an optimisation and no measurement
  * yet says it is needed; running unknown third-party commands concurrently
  * also multiplies whatever they do to the working tree.
  *
- * `baseBranch` is what turns on the diff rloop hands to `kind: command`
- * reviewers. It is optional because `evaluateMergeGate` and this function are
- * both exported and can be driven without a PR in hand; when it is absent no
- * `RLOOP_DIFF_FILE` is set and a provider that needs one is on its own. Every
- * in-tree caller (`prStatus`) supplies it.
+ * rloop does NOT supply the diff a `kind: command` reviewer reviews — the
+ * provider derives its own base. That is a known weakness rather than a
+ * design choice: working out the base, keeping the tracking ref current, and
+ * refusing a verdict computed from an incomplete diff are things rloop is
+ * better placed to do, and every provider re-deriving them gets a chance to
+ * get them wrong silently. A first attempt at moving them here was withdrawn
+ * from this release with nine defects against it, all in the git-interaction
+ * layer; see `examples/reviewers/README.md` for what a provider must
+ * therefore handle itself.
  */
 export async function collectReviewerReports(
   cfg: RloopConfig,
-  opts: {
-    repoRoot: string;
-    headSha: string;
-    reviews: ReviewVerdict[];
-    baseBranch?: string;
-  },
+  opts: { repoRoot: string; headSha: string; reviews: ReviewVerdict[] },
 ): Promise<ReviewerReport[]> {
   const reports: ReviewerReport[] = [];
-  const anyNeedsDiff =
-    opts.baseBranch !== undefined &&
-    cfg.reviewers.some((r) => r.kind === 'command' && r.needs_diff);
-
-  // ONE fetch for the whole invocation, and its failure is FATAL to every
-  // command reviewer rather than something they run through.
-  //
-  // The diff itself is still per-reviewer, because `diff_max_bytes` is: a
-  // single shared file would silently hand every reviewer the smallest cap
-  // any of them configured.
-  let fetchError: string | null = null;
-  if (anyNeedsDiff) {
-    try {
-      await fetchBranch('origin', opts.baseBranch!, opts.repoRoot);
-    } catch (err) {
-      fetchError = `could not fetch origin/${opts.baseBranch}: ${firstLine((err as Error).message)}`;
-    }
-  }
 
   for (const rev of cfg.reviewers) {
-    if (rev.kind !== 'command') {
-      reports.push(forgeReport(rev, opts));
-      continue;
-    }
-
-    // Not opted in, or no PR context to derive a base from: run it exactly as
-    // 0.3.x did, with only RLOOP_HEAD_SHA set.
-    if (!rev.needs_diff || !opts.baseBranch) {
+    if (rev.kind === 'command') {
       reports.push(await runCommandReviewer(rev, opts));
       continue;
     }
-    if (fetchError) {
-      reports.push(await runCommandReviewer(rev, { ...opts, diffError: fetchError }));
-      continue;
-    }
-
-    let diff: DiffContext | null = null;
-    let diffError: string | null = null;
-    try {
-      diff = await prepareDiff({
-        repoRoot: opts.repoRoot,
-        baseBranch: opts.baseBranch,
-        maxBytes: rev.diff_max_bytes ?? null,
-      });
-    } catch (err) {
-      diffError = (err as Error).message;
-    }
-    try {
-      reports.push(await runCommandReviewer(rev, { ...opts, diff, diffError }));
-    } finally {
-      diff?.cleanup();
-    }
+    reports.push(forgeReport(rev, opts));
   }
 
   return reports;

@@ -1,9 +1,24 @@
 # A model-backed `kind: command` reviewer
 
-`codex-review.sh` is a complete provider. It is ~30 lines of actual work, and
-that is the point of this directory: the hard parts of wiring a model into
-`reviewers:` are not the model call, they are five safety properties that fail
-*silently*, and rloop owns four of them so you do not have to.
+`codex-review.sh` is a complete provider. Read this file before you copy it,
+because the hard part of wiring a model into `reviewers:` is not the model
+call — it is five safety properties that each fail **silently**, and **rloop
+currently owns none of them.**
+
+That is a statement about the current release, not a design position. An
+attempt to move four of them into rloop was written, reviewed, and **withdrawn
+from 0.4.0** with nine defects against it, every one in the git-interaction
+layer it added. The work is tracked in #7. Until it lands, the list below is
+yours.
+
+## What rloop sets
+
+| Variable | Value |
+|---|---|
+| `RLOOP_HEAD_SHA` | the commit under review |
+
+That is the whole list. Your provider derives its own base and produces its
+own diff.
 
 ## The config
 
@@ -14,69 +29,72 @@ reviewers:
     run: ./examples/reviewers/codex-review.sh
     timeout_seconds: 900
 
-    # rloop fetches origin/<base>, diffs from the merge base, and writes it to
-    # RLOOP_DIFF_FILE. A failed fetch becomes `unavailable`, which blocks —
-    # never a review against a stale tracking ref.
-    needs_diff: true
-
-    # Cap for a model with a context limit. rloop refuses to accept `clean`
-    # from a run whose diff it truncated.
-    diff_max_bytes: 400000
-
-    # The provider does not echo the sha; rloop supplies it. See below.
+    # The provider does not echo the sha; rloop supplies it. Safe here because
+    # this provider reads a diff of COMMITTED state. Leave it off for a
+    # provider that reads the working tree — see the main README.
     inject_sha: true
 ```
 
-## What rloop sets
+## The five properties, and what rloop does about each
 
-| Variable | Value |
-|---|---|
-| `RLOOP_HEAD_SHA` | the commit under review |
-| `RLOOP_BASE_REF` | e.g. `origin/main` — already fetched |
-| `RLOOP_DIFF_FILE` | absolute path to `git diff <base>...HEAD` |
-| `RLOOP_DIFF_BYTES` | size of that file |
-| `RLOOP_DIFF_TRUNCATED` | `1` if `diff_max_bytes` cut it short |
+**1. Fetch failure must be fatal — yours.** Your provider runs
+`git fetch origin <base>` and must **exit non-zero if it fails**. A tracking
+ref that was not updated is not detectably wrong: the diff still applies, still
+parses, still describes real code, and is merely about a base nobody is merging
+into. A reviewer handed that reports `clean` with total confidence. rloop
+cannot see the difference. (`git fetch origin main` *does* update
+`refs/remotes/origin/main` in a normal clone — verified — but only via git's
+opportunistic update, which needs `remote.origin.fetch` configured. In a
+worktree or a CI checkout where it is not, use the explicit refspec
+`+refs/heads/main:refs/remotes/origin/main`.)
 
-The last four appear only under `needs_diff: true`.
+**2. Diff from the merge base — yours.** Use three-dot (`base...HEAD`). A
+two-dot diff against a base that has moved presents the base's own new commits
+as reverts by your branch.
 
-## The five properties, and who owns each
+**3. A diff you could not read in full must not report clean — yours.** If your
+model hits its context limit, or you capped the diff, the review covered part
+of the change. **Exit non-zero.** rloop's contract turns "no blocking findings
++ non-zero exit" into `unavailable`, which blocks — that is the only lever you
+have here.
 
-**Fetch failure must be fatal.** rloop. A tracking ref that was not updated is
-not detectably wrong — the diff still applies, still parses, still describes
-real code, and is merely about a base nobody is merging into. A reviewer handed
-that reports `clean` with total confidence.
+**4. Do not key that decision on your own finding count — structural.** rloop
+applies `dismiss:` *after* your provider exits. So a partial review that found
+one critical finding, which a dismissal then removes, leaves you exiting 0
+(you found something) and rloop seeing nothing blocking. **Any provider logic
+keyed on "did I find something blocking" is keyed on the wrong number.** Key
+your exit code on whether you *reviewed the whole diff*, never on what you
+found in it.
 
-**Truncation must not report clean.** rloop. Only if rloop did the truncating,
-which is what `diff_max_bytes` is for.
+**5. Findings need stable `id`s — yours.** rloop fingerprints a finding by
+`id`, or by `path` + normalized `title` when there is no id. Titles from a
+model are not stable — one defect came back worded three ways across three runs
+while this example was being written, which is three fingerprints and three
+dead `dismiss:` entries, failing silently while the config still looks
+configured. Ask the model for a slug naming the *defect*, not its sentence
+about the defect. rloop says so when a dismissal misses and the findings
+carried no ids.
 
-**The truncation check must run after dismissals.** rloop, necessarily. A
-provider counts findings *before* `dismiss:` is applied; rloop decides *after*.
-A truncated diff yielding one critical finding that a dismissal then removes
-leaves the provider exiting 0 (it found something) and rloop seeing nothing
-blocking — a partial review reported clean, from two pieces of individually
-correct logic. **The general rule: any provider logic keyed on "did I find
-something blocking" is keyed on the wrong number.**
+## `set -o pipefail`, and the case it actually covers
 
-**Provider crash must not look clean.** Shared. rloop's contract already says a
-non-zero exit can never produce `clean` — but that only works if your exit code
-is true, and a shell pipeline ending in `jq` exits 0 over a dead pipeline.
-`set -o pipefail` is the whole fix, and its absence is invisible until the day
-the model is down.
+Use it. But be clear about which failure it catches, because the obvious story
+is wrong:
 
-**Findings need stable ids.** Yours. rloop fingerprints a finding by `id`, or
-by `path` + normalized `title` when there is no id. Titles from a model are not
-stable — one defect came back worded three ways across three runs during this
-feature's own development, which is three fingerprints and three dead
-`dismiss:` entries, failing silently while the config still looks configured.
-Ask the model for a slug naming the *defect*, not its sentence about it. rloop
-says so when a dismissal misses and the findings carried no ids.
+- **Model dies, prints nothing.** Without `pipefail` the script exits 0 — but
+  stdout is *empty*, so rloop gets no parseable document and reports
+  `malformed`, which blocks. Not silent, and not the reason to use `pipefail`.
+- **Model prints a usable document *and* the pipeline fails** (a non-zero
+  producer whose partial output still parses). Without `pipefail` the script
+  exits 0, rloop sees a valid document and a clean exit, and reports **`clean`**.
+  *This* is the case `pipefail` exists for: with it, the script exits non-zero,
+  rloop sees the contradiction, and blocks.
 
 ## Two smaller walls
 
 **Structured outputs and optional fields collide.** OpenAI requires every key
 in `properties` to appear in `required`. rloop treats `id`/`path`/`line`/`body`
-as optional but rejects unknown keys and empty-string values are values, not
-absences — so ask the model for all six fields and strip the empty ones before
+as optional but rejects unknown keys, and an empty string is a value, not an
+absence — so ask the model for all six fields and strip the empty ones before
 printing. That is the `jq` filter in the script.
 
 **Pipe the diff, never pass it as an argument.** `MAX_ARG_STRLEN` caps a single

@@ -1,4 +1,3 @@
-import type { DiffContext } from './diff.js';
 import { parseProviderDocument } from './document.js';
 import { fingerprint } from './fingerprint.js';
 import { readProviderJson } from './read-json.js';
@@ -9,9 +8,19 @@ export interface CommandReviewer {
   run: string;
   timeout_seconds: number;
   dismiss: Array<{ fingerprint: string; reason: string }>;
-  /** See the `sha` handling below, and `config.ts`. Defaults to false. */
-  inject_sha?: boolean;
-  diff_max_bytes?: number | null;
+  /**
+   * See the `sha` handling below, and `config.ts`. Required rather than
+   * optional: zod defaults it, so every config-derived value carries it, and
+   * an optional field here would exist only to let a hand-built caller land on
+   * a third state that neither `rev.inject_sha` nor `!rev.inject_sha` reads
+   * the way its author meant.
+   *
+   * UNPINNED by the suite, deliberately: widening this back to `inject_sha?:`
+   * leaves all 247 tests green, because every existing caller supplies it. The
+   * guard is a COMPILE error for a FUTURE caller that forgets, which no test
+   * can express. Do not read its presence as evidence anything checks it.
+   */
+  inject_sha: boolean;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -28,7 +37,6 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  *
  * Classification order matters and is the whole contract:
  *
- *   no diff could be prepared                    -> unavailable  (never ran)
  *   spawn failed / timed out                     -> unavailable  (never ran)
  *   output unusable (unparseable OR fails the
  *     document schema) AND exit != 0             -> unavailable  (crashed mid-review)
@@ -37,7 +45,6 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  *   echoed sha != head                           -> stale
  *   blocking findings present                    -> findings     (exit code irrelevant)
  *   no blocking findings AND exit != 0           -> unavailable  (signals contradict)
- *   no blocking findings AND diff truncated      -> unavailable  (partial review)
  *   no blocking findings AND exit == 0           -> clean
  *
  * A non-zero exit may NEVER produce `clean` — that is the rule this table
@@ -52,17 +59,10 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  * `clean`.
  *
  * Nothing here returns clean on a path where the review did not happen.
- *
- * `diff` is what rloop hands across the boundary so a provider can be a
- * pipeline instead of a program: `RLOOP_BASE_REF` and `RLOOP_DIFF_FILE` mean
- * the provider never re-derives the base, never runs its own fetch, and never
- * has to get the fatal-on-failure part right. `diffError` is the other half —
- * when rloop could not produce a diff it says so here rather than running the
- * provider against whatever a stale tracking ref happened to point at.
  */
 export async function runCommandReviewer(
   rev: CommandReviewer,
-  opts: { repoRoot: string; headSha: string; diff?: DiffContext | null; diffError?: string | null },
+  opts: { repoRoot: string; headSha: string },
 ): Promise<ReviewerReport> {
   const base = {
     name: rev.name,
@@ -73,35 +73,10 @@ export async function runCommandReviewer(
     unavailableReason: null,
   };
 
-  // Before anything is spawned. A provider run against an unknown base is
-  // worse than a provider not run at all: the first produces a confident
-  // verdict about the wrong code, the second produces a blocker.
-  if (opts.diffError) {
-    return assertReasonCoupling({
-      ...base,
-      status: 'unavailable',
-      unavailableReason: 'never_ran',
-      detail: `could not prepare the diff to review: ${truncate(opts.diffError)}`,
-    });
-  }
-
   const run = await readProviderJson(rev.run, {
     cwd: opts.repoRoot,
     timeoutMs: rev.timeout_seconds * 1000,
-    env: {
-      RLOOP_HEAD_SHA: opts.headSha,
-      ...(opts.diff
-        ? {
-            RLOOP_BASE_REF: opts.diff.baseRef,
-            RLOOP_DIFF_FILE: opts.diff.file,
-            RLOOP_DIFF_BYTES: String(opts.diff.bytes),
-            // Informational for the provider (it may want to say so in its
-            // prompt). It is NOT what enforces the truncation rule — that is
-            // done below, where the provider cannot get it wrong.
-            RLOOP_DIFF_TRUNCATED: opts.diff.truncated ? '1' : '0',
-          }
-        : {}),
-    },
+    env: { RLOOP_HEAD_SHA: opts.headSha },
   });
 
   if (run.spawnError) {
@@ -121,7 +96,7 @@ export async function runCommandReviewer(
     });
   }
 
-  const parsed = parseProviderDocument(run.stdout, { shaOptional: rev.inject_sha === true });
+  const parsed = parseProviderDocument(run.stdout, { shaOptional: rev.inject_sha });
   if (!parsed.ok) {
     if (run.exitCode !== 0) {
       // The parse/schema failure is the precise diagnosis — computed a few
@@ -153,9 +128,21 @@ export async function runCommandReviewer(
    * job was to catch a CACHED document, and a provider rloop launched in this
    * invocation cannot hand back a document from a previous one unless it
    * caches internally — which is precisely the case the config author opts
-   * out of checking. What still holds either way is the binding to the
-   * commit, which was never the echo's doing: rloop refuses to run against a
-   * dirty worktree, so "the tree" and "that commit" are the same bytes.
+   * out of checking.
+   *
+   * BE PRECISE about what remains, because the obvious sentence here is
+   * false. "rloop refuses to run against a dirty worktree" is true of a GATE
+   * run — `runGates` calls `isDirty` and voids the run — and it is NOT true
+   * of this function. `collectReviewerReports` is not behind that check, and
+   * under `--skip-gates` no dirtiness check happens at all. So a provider
+   * that reads working-tree files rather than committed state can review
+   * uncommitted bytes and, with the echo relaxed, get `opts.headSha` stamped
+   * on the result. `evaluateMergeGate` still blocks the merge — gates are
+   * void or their sha disagrees — but `pr status` will render that reviewer
+   * as clean at a commit it did not review.
+   *
+   * That is the cost of the flag, stated plainly rather than argued away.
+   * Leave it off for a provider that inspects the worktree.
    *
    * An echo that is present and WRONG is still stale, injection or not. The
    * relaxation is "you need not copy the sha", never "any sha will do".
@@ -207,38 +194,6 @@ export async function runCommandReviewer(
         `exited ${run.exitCode} but its document reports no blocking findings — the ` +
         `provider's own signals contradict each other: the exit code says it failed, the ` +
         `document says it is clean`,
-    });
-  }
-
-  /**
-   * A partial review may never be `clean`.
-   *
-   * This check lives HERE, and that placement is the whole reason it is
-   * rloop's job rather than the provider's. A provider guarding its own
-   * truncation counts findings BEFORE `dismiss:` is applied, while the
-   * decision that matters is made AFTER — so a truncated diff yielding one
-   * critical finding that a dismissal then removes leaves the provider
-   * exiting 0 (it found something) and rloop seeing nothing blocking. Result:
-   * a partial review reported `clean`, from two pieces of logic that were
-   * each individually right. Only rloop knows what survived dismissal, so
-   * only rloop can key on it.
-   *
-   * Blocking findings are not overridden: an incomplete review that found a
-   * blocker has still found a blocker, and reporting `findings` sends the
-   * author to fix it. It is the merge-permitting direction that has to be
-   * withheld.
-   */
-  if (blocking.length === 0 && opts.diff?.truncated) {
-    return assertReasonCoupling({
-      ...base,
-      status: 'unavailable',
-      unavailableReason: 'incomplete',
-      sha: reviewedSha,
-      findings,
-      detail:
-        `the diff was truncated at ${opts.diff.bytes} bytes, so the reviewer saw only part ` +
-        `of the change and found nothing blocking in it. Raise diff_max_bytes for "${rev.name}", ` +
-        `or split the PR`,
     });
   }
 

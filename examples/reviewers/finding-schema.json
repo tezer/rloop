@@ -1,28 +1,51 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["findings"],
+  "required": [
+    "findings"
+  ],
   "properties": {
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "//": "Every key is listed in `required` because OpenAI structured outputs demand it — a key in `properties` that is not in `required` is rejected outright. rloop's own document schema treats id/path/line/body as optional, so the provider strips the empty ones before printing; see the jq filter in codex-review.sh.",
-        "required": ["id", "severity", "path", "line", "title", "body"],
+        "required": [
+          "id",
+          "severity",
+          "path",
+          "line",
+          "title",
+          "body"
+        ],
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stable slug naming the DEFECT, not the sentence about it. Must be identical across runs for the same defect — it is what a dismiss: entry matches on."
+            "description": "Stable slug naming the DEFECT, not the sentence about it. Must be identical across runs for the same defect \u2014 it is what a dismiss: entry matches on."
           },
           "severity": {
             "type": "string",
-            "enum": ["critical", "important", "minor"]
+            "enum": [
+              "critical",
+              "important",
+              "minor"
+            ]
           },
-          "path": { "type": "string", "description": "Repo-relative path, or \"\"." },
-          "line": { "type": "string", "description": "Line number as a string, or \"\". Converted to a number by the provider." },
-          "title": { "type": "string" },
-          "body": { "type": "string", "description": "Free-text detail, or \"\"." }
+          "path": {
+            "type": "string",
+            "description": "Repo-relative path, or \"\"."
+          },
+          "line": {
+            "type": "string",
+            "description": "Line number as a string, or \"\". Converted to a number by the provider."
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string",
+            "description": "Free-text detail, or \"\"."
+          }
         }
       }
     }

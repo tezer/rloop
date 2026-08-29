@@ -500,11 +500,11 @@ describe('reviewer reports', () => {
   });
 
   describe('unavailable wording, per cause (I1)', () => {
-    // `unavailable` collapses four causes into one status (see
+    // `unavailable` collapses three causes into one status (see
     // UnavailableReason in src/reviewers/types.ts). Only the first is
-    // actually true to say "could not run" — the other three describe a
-    // process that DID run and even produced a document. Each case here
-    // pins the wording rloop actually shows for that cause.
+    // actually true to say "could not run" — the other two describe a
+    // process that DID run. Each case here pins the wording rloop actually
+    // shows for that cause.
     const messageFor = (unavailableReason: ReviewerReport['unavailableReason'], detail: string) =>
       evaluateMergeGate({
         cfg: cfg(),
@@ -538,17 +538,6 @@ describe('reviewer reports', () => {
       expect(message).toContain('produced a document');
     });
 
-    it('incomplete (truncated diff, nothing blocking): says the "nothing found" covers only part', () => {
-      // The cause that reads most like a pass and is the least like one: this
-      // reviewer ran to completion and produced a perfectly good document,
-      // about the wrong amount of code. "Could not run" would be a lie, and
-      // so would any wording that let a reader take the empty result at face
-      // value.
-      const message = messageFor('incomplete', 'the diff was truncated at 512 bytes');
-      expect(message).not.toContain('could not run');
-      expect(message).toContain('only part of the change');
-      expect(message).toContain('truncated at 512 bytes');
-    });
   });
 
   it('blocks a malformed reviewer separately from an unavailable one', () => {

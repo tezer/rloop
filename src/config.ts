@@ -270,25 +270,6 @@ const commandReviewerSchema = z
     timeout_seconds: z.number().int().positive().max(3600).default(600),
     dismiss: z.array(dismissalSchema).default([]),
 
-    /**
-     * Have rloop fetch the base branch and hand this reviewer the diff, via
-     * `RLOOP_BASE_REF` and `RLOOP_DIFF_FILE`.
-     *
-     * OFF by default, which is not a hedge about whether the feature is good
-     * — it is the only honest default. Turning it on makes a failed fetch
-     * FATAL to this reviewer (see `reviewers/collect.ts`), and rloop cannot
-     * tell from the outside whether a given `run:` line reads a diff at all.
-     * A reviewer that runs `npm audit` does not, and defaulting this on would
-     * block it in any checkout without an `origin` remote, for a resource it
-     * never wanted.
-     *
-     * Declaring it is therefore the consumer's one job, and in exchange rloop
-     * takes over the parts that fail silently: working out the base, keeping
-     * the tracking ref current, taking the diff from the merge base, and
-     * refusing to accept a verdict computed from an incomplete one. A
-     * provider reduces to "read a file, ask a model, print JSON".
-     */
-    needs_diff: z.boolean().default(false),
 
     /**
      * Let rloop supply `sha` when the document omits it.
@@ -311,21 +292,6 @@ const commandReviewerSchema = z
      */
     inject_sha: z.boolean().default(false),
 
-    /**
-     * Cap the diff rloop writes to `RLOOP_DIFF_FILE`, in bytes. Requires
-     * `needs_diff: true`; without it there is no diff to cap.
-     *
-     * Unset means no cap. Set it when the consumer has a context limit it
-     * cannot exceed — the honest reason a diff would ever be cut short.
-     *
-     * Capping here rather than in the provider is what makes truncation safe.
-     * rloop refuses to report `clean` from a truncated run (see
-     * `reviewers/command.ts`), and it applies that rule AFTER `dismiss:`,
-     * which a provider counting its own findings cannot do. A provider that
-     * truncates for itself has to reimplement that guard against a number it
-     * does not have.
-     */
-    diff_max_bytes: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -404,24 +370,6 @@ export const configSchema = z
           '`merge.required_reviewer_state` are set. Pick one — merging them silently ' +
           'would give two sources of truth for who must review this PR.',
       });
-    }
-
-    for (const r of cfg.reviewers) {
-      // An inert knob is the failure mode this release exists to remove.
-      // Without `needs_diff`, rloop writes no diff, so a cap on it bounds
-      // nothing — while the author who set it believes their reviewer is
-      // bounded. Checked here rather than on `commandReviewerSchema` itself:
-      // a `.superRefine()` turns a ZodObject into a ZodEffects, and
-      // `z.discriminatedUnion` only accepts objects.
-      if (r.kind === 'command' && r.diff_max_bytes !== undefined && !r.needs_diff) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `reviewer "${r.name}" sets diff_max_bytes without needs_diff: true. rloop only ` +
-            'writes a diff when needs_diff is set, so the cap would bound nothing. Add ' +
-            '`needs_diff: true`, or drop diff_max_bytes.',
-        });
-      }
     }
 
     const names = new Set<string>();

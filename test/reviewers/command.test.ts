@@ -10,6 +10,7 @@ const rev = (file: string, dismiss: Array<{ fingerprint: string; reason: string 
   run: `node ${path.join(FIX, file)}`,
   timeout_seconds: 15,
   dismiss,
+  inject_sha: false,
 });
 const go = (file: string, dismiss?: Array<{ fingerprint: string; reason: string }>) =>
   runCommandReviewer(rev(file, dismiss), { repoRoot: process.cwd(), headSha: HEAD });
@@ -33,10 +34,12 @@ describe('runCommandReviewer', () => {
     expect(r.findings).toHaveLength(1);
   });
 
-  it('names dismissals that matched nothing, so dead entries can be deleted', async () => {
+  it('names dismissals that matched nothing', async () => {
     // A dismissal list that quietly accumulates unmatched entries is how a
     // real finding gets pre-suppressed by accident. Warning, not an error:
-    // the usual cause is that the finding was genuinely fixed.
+    // the usual cause is that the finding was genuinely fixed. NOT phrased as
+    // "so they can be deleted" — see the sibling test below for why deleting
+    // is the wrong advice for a nondeterministic provider.
     const r = await go('clean.mjs', [{ fingerprint: 'deadbeef', reason: 'stale entry' }]);
     expect(r.status).toBe('clean');
     expect(r.detail).toContain('deadbeef');
