@@ -51,7 +51,7 @@ const short = (sha: string) => sha.slice(0, 7);
  *
  * Worth spelling out, because "re-request review" on its own sends the reader
  * at an API that can answer 200 and do nothing. Observed against GitHub
- * Copilot, on one repository, across three attempts spanning five days:
+ * Copilot, on one repository, across three occasions spanning five days:
  *
  *   - 2026-08-25 — three successful requests on PR #4, each followed by a
  *     review. The `review_requested` events are in the timeline.
@@ -121,7 +121,9 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
   }
 
   if (!gateRun.green) {
-    const why = gateRun.invalidatedBy
+    const why = gateRun.invalidatedBy === 'gates_skipped'
+      ? 'gates were skipped, so there is no gate evidence at all'
+      : gateRun.invalidatedBy
       ? `run was void (${gateRun.invalidatedBy})`
       : gateRun.partial
         ? 'run was partial (--only), which is never a merge verdict'

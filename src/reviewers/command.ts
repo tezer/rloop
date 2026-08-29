@@ -16,7 +16,7 @@ export interface CommandReviewer {
    * the way its author meant.
    *
    * UNPINNED by the suite, deliberately: widening this back to `inject_sha?:`
-   * leaves all 253 tests green, because every existing caller supplies it. The
+   * leaves all 255 tests green, because every existing caller supplies it. The
    * guard is a COMPILE error for a FUTURE caller that forgets, which no test
    * can express. Do not read its presence as evidence anything checks it.
    */

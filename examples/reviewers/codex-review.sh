@@ -52,8 +52,12 @@ echo "reviewing ${BASE_BRANCH}...${RLOOP_HEAD_SHA}" >&2
 # into a non-zero exit with no stdout, which rloop classifies `unavailable`
 # (`crashed`). The explicit refspec rather than the bare `git fetch origin
 # main` form: the bare form does update the tracking ref, but only via git's
-# opportunistic update, which needs `remote.origin.fetch` configured — not
-# guaranteed in a worktree or a CI checkout.
+# opportunistic update, which needs a `remote.origin.fetch` refspec that covers
+# the branch. A `--single-branch` or shallow clone — what `actions/checkout`
+# produces — sets a narrow, branch-specific one, and then the bare form does
+# not even create the ref. (A linked `git worktree` is FINE: it shares the
+# parent's config and inherits the refspec. An earlier draft of this comment
+# said otherwise; measured.)
 git fetch --no-tags --quiet origin \
   "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" >&2
 
@@ -139,11 +143,13 @@ PROMPT
 # strict about unknown keys but treats id/path/line/body as optional, so an
 # empty string left in would be a value, not an absence.
 #
-# ALL OR NOTHING, deliberately: one unusable `line` (a range like "12-15", or
-# "0", which rloop's schema rejects as non-positive) fails the whole document
+# ALL OR NOTHING, deliberately: one unusable `line` fails the whole document
 # rather than dropping that finding. Discarding one finding silently from an
-# otherwise-accepted review is the worse outcome — the run blocks as
-# `malformed`, which is a provider defect the operator should see.
+# otherwise-accepted review is the worse outcome. The two shapes land in
+# different places, both blocking: `"0"` parses and fails rloop's schema
+# (`.positive()`) → `malformed`; a range like `"12-15"` kills `jq` itself, so
+# nothing reaches stdout and `pipefail` makes the exit non-zero →
+# `unavailable`/`crashed`.
 #
 # codex's stderr is NOT discarded: it is the only diagnosis of a failed model
 # call, and rloop appends a provider's stderr to the `crashed`, `contradicted`

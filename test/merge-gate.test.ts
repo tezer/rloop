@@ -222,6 +222,26 @@ gates:
     expect(codes(d)).toContain('gates_not_green');
   });
 
+  it('does not blame --only when the operator skipped gates instead', async () => {
+    // `--skip-gates` models a void run, and merge-gate used to read its
+    // `partial: true` as "run was partial (--only), which is never a merge
+    // verdict" — naming a flag that was never passed and sending the operator
+    // to look for it. Both shapes block; only the sentence was wrong.
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
+    const d = evaluateMergeGate({
+      cfg: c,
+      pr: pr(),
+      gateRun: greenRun({ green: false, partial: true, invalidatedBy: 'gates_skipped' }),
+      reviewerReports,
+      degradation,
+      threads: [],
+    });
+    const message = d.blockers.find((b) => b.code === 'gates_not_green')?.message;
+    expect(message).toMatch(/skipped/);
+    expect(message).not.toMatch(/--only/);
+  });
+
   it('blocks a void gate run (dirty worktree)', async () => {
     const c = cfg();
     const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);

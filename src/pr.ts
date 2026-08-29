@@ -49,13 +49,19 @@ export async function prStatus(
 
   let gateRun: GateRunResult;
   if (opts.skipGates) {
-    // Explicitly-absent gate evidence. Modelled as a void run so the decision
+    // Explicitly-absent gate evidence. Modelled as a VOID run so the decision
     // blocks — "I didn't check" must never read the same as "it passed".
+    //
+    // `invalidatedBy` rather than `partial` alone. Both block, but the blocker
+    // SENTENCE differs: merge-gate reads `partial` as "run was partial
+    // (--only), which is never a merge verdict", and no `--only` was passed —
+    // sending an operator to look for a flag they never used. This path is
+    // newly user-facing, so it gets its own reason.
     gateRun = {
       green: false,
       partial: true,
       sha: '0'.repeat(40),
-      invalidatedBy: null,
+      invalidatedBy: 'gates_skipped',
       gates: [],
       durationMs: 0,
       logDir: '',

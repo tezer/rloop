@@ -56,9 +56,11 @@ parses, still describes real code, and is merely about a base nobody is merging
 into. A reviewer handed that reports `clean` with total confidence. rloop
 cannot see the difference. (`git fetch origin main` *does* update
 `refs/remotes/origin/main` in a normal clone — verified — but only via git's
-opportunistic update, which needs `remote.origin.fetch` configured. In a
-worktree or a CI checkout where it is not, use the explicit refspec
-`+refs/heads/main:refs/remotes/origin/main`.)
+opportunistic update, which needs a `remote.origin.fetch` refspec covering the
+branch. A `--single-branch` or shallow clone — what `actions/checkout` produces
+— sets a narrow one, and then the bare form does not even create the ref; use
+the explicit `+refs/heads/main:refs/remotes/origin/main`. A linked
+`git worktree` is fine, it inherits the parent's config.)
 
 **2. Diff from the merge base — yours.** Use three-dot
 (`origin/<base>...$RLOOP_HEAD_SHA`). A two-dot diff against a base that has

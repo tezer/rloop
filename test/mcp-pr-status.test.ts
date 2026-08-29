@@ -143,6 +143,27 @@ describe('pr_status — degraded field', () => {
     expect(out.reviewerReports[0].status).toBe('clean');
   });
 
+  it('names SKIPPED gates as the reason, not a --only flag nobody passed', async () => {
+    // `prStatus` models `skipGates` as a void run so the decision blocks.
+    // It used to leave `invalidatedBy: null` and lean on `partial: true`,
+    // which merge-gate renders as "run was partial (--only), which is never a
+    // merge verdict" — naming a flag the operator never used and sending them
+    // to look for it. Driven through the real tool rather than a hand-built
+    // GateRunResult, so it pins the WIRING in src/pr.ts and not just the
+    // wording in merge-gate.ts.
+    const out = payload(
+      await client.callTool({
+        name: 'pr_status',
+        arguments: { pr: 9, configPath: clean.config, skipGates: true },
+      }),
+    );
+    const message = out.decision.blockers.find(
+      (b: { code: string }) => b.code === 'gates_not_green',
+    )?.message;
+    expect(message).toMatch(/skipped/);
+    expect(message).not.toMatch(/--only/);
+  });
+
   it('is populated when a command reviewer cannot run', async () => {
     const out = payload(
       await client.callTool({

@@ -87,7 +87,7 @@ export interface GateRunResult {
    * Populated when the run cannot be trusted regardless of gate outcomes:
    * a dirty worktree, or HEAD moving mid-run. Forces `green: false`.
    */
-  invalidatedBy: null | 'dirty_worktree' | 'head_moved';
+  invalidatedBy: null | 'dirty_worktree' | 'head_moved' | 'gates_skipped';
   gates: GateResult[];
   durationMs: number;
   /** Directory holding every captured gate log. */
