@@ -51,7 +51,7 @@ const short = (sha: string) => sha.slice(0, 7);
  *
  * Worth spelling out, because "re-request review" on its own sends the reader
  * at an API that can answer 200 and do nothing. Observed against GitHub
- * Copilot, on one repository, across two days:
+ * Copilot, on one repository, across three occasions spanning five days:
  *
  *   - 2026-08-25 — three successful requests on PR #4, each followed by a
  *     review. The `review_requested` events are in the timeline.
@@ -60,6 +60,9 @@ const short = (sha: string) => sha.slice(0, 7);
  *     mutation with the bot's node id and `union: true`). Every one returned
  *     success. NONE produced a timeline event, a pending request, or a review
  *     within five minutes.
+ *   - 2026-08-29 — the same on PR #6, three days later, on a fresh branch with
+ *     no prior review of any kind. Recorded because on 2026-08-26 waiting it
+ *     out as an outage was the reasonable read, and this says it is not one.
  *
  * Same repo, same account, same calls. So the cause is not a spelling or an
  * endpoint choice, and this deliberately does not name one — a first draft of
@@ -118,7 +121,9 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
   }
 
   if (!gateRun.green) {
-    const why = gateRun.invalidatedBy
+    const why = gateRun.invalidatedBy === 'gates_skipped'
+      ? 'gates were skipped, so there is no gate evidence at all'
+      : gateRun.invalidatedBy
       ? `run was void (${gateRun.invalidatedBy})`
       : gateRun.partial
         ? 'run was partial (--only), which is never a merge verdict'
@@ -127,12 +132,29 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
   }
 
   // Three-way SHA agreement, part one: gates vs PR head.
+  //
+  // Skipped gates change the SENTENCE and never the BLOCKER. A first attempt
+  // at this suppressed the blocker itself when `invalidatedBy` was
+  // `gates_skipped`, on the reasoning that `gates_not_green` already covers
+  // that path. It does — for the one in-tree caller. `evaluateMergeGate` is
+  // exported from src/index.ts, and a caller handing it `green: true` with
+  // `gates_skipped` and a mismatched sha got `allowed: true, blockers: []`:
+  // a merge permitted at a commit the gates did not verify, introduced while
+  // fixing a cosmetic message. Measured.
+  //
+  // The `reviewerReports.length === 0` guard twenty lines below states the
+  // standard this violated — "defends this function's own public contract,
+  // independent of any caller" — and the same commit applied it correctly in
+  // report.ts. Never trade a blocker for a nicer message.
   if (gateRun.sha !== pr.headSha) {
     blockers.push({
       code: 'sha_mismatch_gates',
       message:
-        `Gates ran on ${short(gateRun.sha)} but PR head is ${short(pr.headSha)}. ` +
-        `The verified code is not the code that would merge.`,
+        gateRun.invalidatedBy === 'gates_skipped'
+          ? `Gates were skipped, so nothing is bound to PR head ${short(pr.headSha)}. ` +
+            `There is no verified code to compare.`
+          : `Gates ran on ${short(gateRun.sha)} but PR head is ${short(pr.headSha)}. ` +
+            `The verified code is not the code that would merge.`,
     });
   }
 
@@ -196,9 +218,14 @@ export function evaluateMergeGate(input: MergeGateInput): MergeDecision {
       case 'unavailable': {
         // `unavailable` collapses three distinct causes (see UnavailableReason
         // in reviewers/types.ts). "Could not run" is only true for the first —
-        // the other two describe a process that DID run and even produced a
-        // document. Asserting "could not run" for those is self-contradictory
-        // when `detail` goes on to describe exit codes and documents.
+        // the other two describe a process that DID run. Only `contradicted`
+        // also produced a usable document; `crashed` is defined by output that
+        // could NOT be used, so do not claim a document for it. Asserting
+        // "could not run" for either is self-contradictory when `detail` goes
+        // on to describe an exit code.
+        //
+        // NOT exhaustive-checked: a new UnavailableReason silently lands on
+        // the `could not run` fallback. See the note on the type.
         const lead =
           r.unavailableReason === 'crashed'
             ? `Reviewer "${r.name}" ran but crashed before producing a usable review`

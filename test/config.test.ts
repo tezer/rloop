@@ -220,6 +220,19 @@ reviewers:
     ).toThrow();
   });
 
+  it('defaults inject_sha off, so the sha echo stays required unless asked', () => {
+    // OFF by default because it RELAXES a check. A relaxation that arrives by
+    // surprise in a config that did not ask for it is the wrong direction for
+    // this tool, whatever the ergonomics.
+    const cfg = loadConfig(`${base}
+reviewers:
+  - name: codex
+    kind: command
+    run: codex review --json
+`);
+    expect(cfg.reviewers[0]).toMatchObject({ inject_sha: false });
+  });
+
   it('rejects a dismissal with no reason', () => {
     expect(() =>
       loadConfig(`${base}

@@ -143,6 +143,46 @@ describe('pr_status — degraded field', () => {
     expect(out.reviewerReports[0].status).toBe('clean');
   });
 
+  it('names SKIPPED gates as the reason, not a --only flag nobody passed', async () => {
+    // `prStatus` models `skipGates` as a void run so the decision blocks.
+    // It used to leave `invalidatedBy: null` and lean on `partial: true`,
+    // which merge-gate renders as "run was partial (--only), which is never a
+    // merge verdict" — naming a flag the operator never used and sending them
+    // to look for it. Driven through the real tool rather than a hand-built
+    // GateRunResult, so it pins the WIRING in src/pr.ts and not just the
+    // wording in merge-gate.ts.
+    const out = payload(
+      await client.callTool({
+        name: 'pr_status',
+        arguments: { pr: 9, configPath: clean.config, skipGates: true },
+      }),
+    );
+    const message = out.decision.blockers.find(
+      (b: { code: string }) => b.code === 'gates_not_green',
+    )?.message;
+    // The FULL sentence, not `/skipped/`. That pattern was vacuous: deleting
+    // the special case falls through to `run was void (gates_skipped)`, which
+    // interpolates the enum member name and matches `/skipped/` too — so the
+    // assertion passed with the behaviour it names removed.
+    expect(message).toContain('gates were skipped, so there is no gate evidence at all');
+    expect(message).not.toMatch(/--only|run was void/);
+
+    // The SIBLING blocker still fires, and must. A first pass at this
+    // SUPPRESSED `sha_mismatch_gates` on the skipped path, which opened a
+    // merge-permitting hole for any direct caller of the exported
+    // `evaluateMergeGate` (green: true + gates_skipped + mismatched sha →
+    // allowed, zero blockers). The fix is to correct the SENTENCE and keep
+    // the blocker.
+    const codes = out.decision.blockers.map((b: { code: string }) => b.code);
+    expect(codes).toContain('gates_not_green');
+    expect(codes).toContain('sha_mismatch_gates');
+    const mismatch = out.decision.blockers.find(
+      (b: { code: string }) => b.code === 'sha_mismatch_gates',
+    )?.message;
+    expect(mismatch).toContain('Gates were skipped');
+    expect(mismatch).not.toMatch(/Gates ran on 0000000/);
+  });
+
   it('is populated when a command reviewer cannot run', async () => {
     const out = payload(
       await client.callTool({

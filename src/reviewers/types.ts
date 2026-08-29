@@ -52,6 +52,10 @@ export type FindingsReason =
  * first: the other two describe a process that DID run. This field lets the
  * blocker message say which one happened instead of merge-gate.ts guessing
  * from `detail` text.
+ *
+ * ADDING A MEMBER: `merge-gate.ts`'s lead-sentence chain has no exhaustive
+ * guard, so a new member silently inherits "could not run" — the exact false
+ * claim this type exists to prevent. Add the case there in the same commit.
  */
 export type UnavailableReason =
   | 'never_ran'

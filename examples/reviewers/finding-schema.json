@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "findings"
+  ],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "path",
+          "line",
+          "title",
+          "body"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable slug naming the DEFECT, not the sentence about it. Must be identical across runs for the same defect \u2014 it is what a dismiss: entry matches on."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "important",
+              "minor"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Repo-relative path, or \"\"."
+          },
+          "line": {
+            "type": "string",
+            "description": "Line number as a string, or \"\". Converted to a number by the provider."
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string",
+            "description": "Free-text detail, or \"\"."
+          }
+        }
+      }
+    }
+  }
+}

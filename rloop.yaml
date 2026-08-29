@@ -24,12 +24,12 @@ gates:
   - name: test
     run: npx vitest run
     require:
-      # A FLOOR of 239, not a bare `\d+ passed`.
+      # A FLOOR of 269, not a bare `\d+ passed`.
       #
       # The failure this guards is a suite that SHRINKS: a renamed directory,
       # a broken import in a conftest-equivalent, a glob that stops matching.
       # vitest exits 0 and prints a cheerful `Tests  50 passed (50)`, which a
-      # bare pattern accepts. Measured 2026-08-26 at 239.
+      # bare pattern accepts. Measured 2026-08-30 at 269.
       #
       # Anchored at line start with no `failed` alternative on purpose: a red
       # run prints `Tests  1 failed | 217 passed (218)`, which begins with the
@@ -37,7 +37,7 @@ gates:
       #
       # ⚠️ RAISE THIS when the suite grows — nothing will remind you. It only
       # catches shrinkage. Lowering it to make a red run green defeats the point.
-      - "^\\s+Tests\\s+(239|2[4-9][0-9]|[3-9][0-9]{2}|[0-9]{4,}) passed \\(\\d+\\)$"
+      - "^\\s+Tests\\s+(269|2[7-9][0-9]|[3-9][0-9]{2}|[0-9]{4,}) passed \\(\\d+\\)$"
       # The file-level twin. A test FILE that fails to load reports
       # `Test Files  1 failed | 20 passed (21)` while individual tests may
       # still tally clean, so the Tests line alone can miss a collection error.
@@ -148,10 +148,21 @@ reviewers:
   # A local second opinion, dogfooding this release's own feature. Commented
   # out because it needs a `codex` binary on PATH; uncomment once you have
   # one. It must print ONE JSON document on stdout and narrate on stderr.
+  #
+  # `inject_sha` is what 0.4.0 added: rloop supplies the sha rather than asking
+  # a model to copy a 40-character hex string into a JSON field. Sound for this
+  # provider because the script diffs $RLOOP_HEAD_SHA specifically — NOT merely
+  # because it reads committed state, which is necessary and not sufficient (a
+  # provider can read the wrong committed state). See examples/reviewers/README.md
+  # for all five safety properties. FOUR are the script's (1, 2, 3, 5);
+  # property 4 is structural — rloop applies `dismiss:` after the provider
+  # exits, so a provider keyed on its own finding count is keyed on the wrong
+  # number and cannot fix that from its side.
   # - name: codex
   #   kind: command
-  #   run: codex review --base origin/main --json
+  #   run: ./examples/reviewers/codex-review.sh
   #   timeout_seconds: 900
+  #   inject_sha: true
 
 merge:
   # ENABLED. The loop closes by itself when every condition below holds.

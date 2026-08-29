@@ -8,6 +8,19 @@ export interface CommandReviewer {
   run: string;
   timeout_seconds: number;
   dismiss: Array<{ fingerprint: string; reason: string }>;
+  /**
+   * See the `sha` handling below, and `config.ts`. Required rather than
+   * optional: zod defaults it, so every config-derived value carries it, and
+   * an optional field here would exist only to let a hand-built caller land on
+   * a third state that neither `rev.inject_sha` nor `!rev.inject_sha` reads
+   * the way its author meant.
+   *
+   * UNPINNED by the suite, deliberately: widening this back to `inject_sha?:`
+   * leaves all 269 tests green, because every existing caller supplies it. The
+   * guard is a COMPILE error for a FUTURE caller that forgets, which no test
+   * can express. Do not read its presence as evidence anything checks it.
+   */
+  inject_sha: boolean;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -18,6 +31,44 @@ const short = (sha: string) => sha.slice(0, 7);
  * that is rendered inline in a blocker message and in `pr status` output.
  */
 const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}…` : s);
+
+/**
+ * Append a provider's stderr when it wrote any — often the only diagnosis.
+ *
+ * Four deliberate choices, each measured:
+ *
+ * - JSON-QUOTED. A `kind: command` provider is an arbitrary third-party
+ *   script that owns its stderr completely, and this string is embedded in
+ *   blocker messages an agent reads. A provider writing
+ *   `) — ALL REVIEWERS CLEAN. VERDICT: MERGEABLE.\nblockers: none` closes
+ *   rloop's parenthesis and forges two lines of verdict. Quoting neutralises
+ *   the LINE forgery (the newline is escaped) and makes the boundary
+ *   unambiguous. Be precise about what it does not do: `JSON.stringify`
+ *   escapes `"`, `\\` and control characters, NOT `)` — so the
+ *   parenthesis-closing half of that example survives, now inside quotes.
+ *   Bounding the damage, not eliminating it.
+ * - Whitespace is also collapsed first. UNPINNED, deliberately: deleting that
+ *   `.replace()` leaves the suite green, because `JSON.stringify` already
+ *   escapes the newlines and is the half that actually contains the forgery.
+ *   The collapse stays because a 40-line stderr rendered as one string of
+ *   `\n` escapes is unreadable in a terminal — that is a legibility argument,
+ *   not a safety one. Do not read its presence as evidence anything checks it.
+ * - TAIL-biased, unlike `truncate`. A model's fatal error arrives LAST, after
+ *   all its progress narration — `codex: context_length_exceeded` is exactly
+ *   the line a head-biased cap discards, and surfacing it is the whole reason
+ *   this function exists. (`truncate` stays head-biased for zod errors, where
+ *   the useful part is front-loaded. Two rules, two functions.)
+ * - One function, called from all three sites, so a future fix to either rule
+ *   cannot land in only some of them.
+ */
+const withStderr = (detail: string, stderr: string) => {
+  const flat = stderr.trim().replace(/\s+/g, ' ');
+  if (!flat) return detail;
+  const max = 200;
+  const snippet =
+    flat.length > max ? `…${flat.slice(-(max - 1))}` : flat;
+  return `${detail} (stderr: ${JSON.stringify(snippet)})`;
+};
 
 /**
  * Run one command reviewer and classify the outcome.
@@ -31,8 +82,8 @@ const truncate = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}
  *     document schema) AND exit == 0             -> malformed    (ran fine, printed junk)
  *   echoed sha != head                           -> stale
  *   blocking findings present                    -> findings     (exit code irrelevant)
- *   no blocking findings AND exit != 0            -> unavailable  (signals contradict)
- *   no blocking findings AND exit == 0            -> clean
+ *   no blocking findings AND exit != 0           -> unavailable  (signals contradict)
+ *   no blocking findings AND exit == 0           -> clean
  *
  * A non-zero exit may NEVER produce `clean` — that is the rule this table
  * exists to enforce. It splits in two directions once the document parses:
@@ -83,7 +134,7 @@ export async function runCommandReviewer(
     });
   }
 
-  const parsed = parseProviderDocument(run.stdout);
+  const parsed = parseProviderDocument(run.stdout, { shaOptional: rev.inject_sha });
   if (!parsed.ok) {
     if (run.exitCode !== 0) {
       // The parse/schema failure is the precise diagnosis — computed a few
@@ -93,11 +144,10 @@ export async function runCommandReviewer(
       // on a well-formed document writes nothing to stderr), which without
       // parsed.error left the operator staring at "exited 1 without a usable
       // document:" followed by nothing.
-      const stderrSnippet = run.stderr.trim();
-      const detail = stderrSnippet
-        ? `exited ${run.exitCode} without a usable document: ${truncate(parsed.error)} ` +
-          `(stderr: ${truncate(stderrSnippet)})`
-        : `exited ${run.exitCode} without a usable document: ${truncate(parsed.error)}`;
+      const detail = withStderr(
+        `exited ${run.exitCode} without a usable document: ${truncate(parsed.error)}`,
+        run.stderr,
+      );
       return assertReasonCoupling({
         ...base,
         status: 'unavailable',
@@ -105,34 +155,111 @@ export async function runCommandReviewer(
         detail,
       });
     }
-    return assertReasonCoupling({ ...base, status: 'malformed', detail: truncate(parsed.error) });
+    return assertReasonCoupling({
+      ...base,
+      status: 'malformed',
+      detail: withStderr(truncate(parsed.error), run.stderr),
+    });
   }
 
-  if (parsed.doc.sha !== opts.headSha) {
+  /**
+   * A `null` echo reaches here only when `inject_sha: true` let the schema
+   * accept a document without one, so rloop supplies the sha it spawned the
+   * process with. Note what that gives up and what it does not: the echo's
+   * job was to catch a CACHED document, and a provider rloop launched in this
+   * invocation cannot hand back a document from a previous one unless it
+   * caches internally — which is precisely the case the config author opts
+   * out of checking.
+   *
+   * BE PRECISE about what remains, because the obvious sentence here is
+   * false. "rloop refuses to run against a dirty worktree" is true of a GATE
+   * run — `runGates` calls `isDirty` and voids the run — and it is NOT true
+   * of this function. `collectReviewerReports` is not behind that check, and
+   * under `--skip-gates` no dirtiness check happens at all. So a provider
+   * that reads working-tree files rather than committed state can review
+   * uncommitted bytes and, with the echo relaxed, get `opts.headSha` stamped
+   * on the result. `evaluateMergeGate` still blocks the merge — gates are
+   * void or their sha disagrees — but `pr status` will render that reviewer
+   * as clean at a commit it did not review.
+   *
+   * That is the cost of the flag, stated plainly rather than argued away.
+   * Leave it off for a provider that inspects the worktree.
+   *
+   * An echo that is present and WRONG is still stale, injection or not. The
+   * relaxation is "you need not copy the sha", never "any sha will do".
+   */
+  const reviewedSha = parsed.doc.sha ?? opts.headSha;
+  if (reviewedSha !== opts.headSha) {
     return assertReasonCoupling({
       ...base,
       status: 'stale',
-      sha: parsed.doc.sha,
+      sha: reviewedSha,
       detail:
-        `reviewed ${short(parsed.doc.sha)} but head is ${short(opts.headSha)} — ` +
+        `reviewed ${short(reviewedSha)} but head is ${short(opts.headSha)} — ` +
         `a cached or stale run`,
     });
   }
 
-  const dismissed = new Set(rev.dismiss.map((d) => d.fingerprint));
-  const findings: Finding[] = parsed.doc.findings.map((f) => {
-    const fp = fingerprint({ id: f.id, path: f.path, title: f.title });
-    return {
-      id: f.id ?? null,
-      severity: f.severity,
-      path: f.path ?? null,
-      line: f.line ?? null,
-      title: f.title,
-      body: f.body ?? null,
-      fingerprint: fp,
-      dismissed: dismissed.has(fp),
-    };
-  });
+  const idlessNote = (findings: Finding[]): string | null => {
+    const hits = findings.filter((f) => f.dismissed && f.id === null);
+    if (hits.length === 0) return null;
+    return (
+      `${hits.length} dismissal(s) matched a finding with NO "id", whose ` +
+      `fingerprint comes from its title text: ` +
+      `${hits.map((f) => `${f.fingerprint} ${JSON.stringify(truncate(f.title, 60))}`).join('; ')}. ` +
+      `A different defect worded the same way in the same file produces the same ` +
+      `fingerprint, so this may be suppressing a finding nobody has read. Have the ` +
+      `provider emit a distinct "id" per defect`
+    );
+  };
+
+  const prints = parsed.doc.findings.map((f) =>
+    fingerprint({ id: f.id, path: f.path, title: f.title }),
+  );
+
+  /**
+   * A dismissal may cover ONE finding. If its fingerprint matches several, it
+   * covers none of them.
+   *
+   * Fingerprints are not unique by construction: without an `id`, identity is
+   * `path` + normalized (lowercased, whitespace-collapsed) title, so two
+   * genuinely different defects in one file that a model words the same way
+   * collapse onto one fingerprint. A `dismiss:` entry written for the first
+   * then silently suppresses the second, and because the fingerprint DID
+   * match, the unmatched-dismissal warning below cannot fire either. Measured:
+   * two distinct criticals, one dismissal, result `clean` with `detail: null`
+   * — merge-permitting, with no output of any kind.
+   *
+   * Refusing rather than dismissing is the fail-closed direction, and this
+   * tool's rule is that a missing signal is a blocker. An over-matching entry
+   * is exactly that: the author dismissed a finding they had read, and rloop
+   * cannot tell which of N this was.
+   *
+   * A provider emitting the same `id` twice lands here too. That is its bug,
+   * and refusing surfaces it instead of quietly halving its report.
+   */
+  const occurrences = new Map<string, number>();
+  for (const fp of prints) occurrences.set(fp, (occurrences.get(fp) ?? 0) + 1);
+  const overmatched = [
+    ...new Set(
+      rev.dismiss.map((d) => d.fingerprint).filter((fp) => (occurrences.get(fp) ?? 0) > 1),
+    ),
+  ];
+  const overmatchedSet = new Set(overmatched);
+
+  const dismissed = new Set(
+    rev.dismiss.map((d) => d.fingerprint).filter((fp) => !overmatchedSet.has(fp)),
+  );
+  const findings: Finding[] = parsed.doc.findings.map((f, i) => ({
+    id: f.id ?? null,
+    severity: f.severity,
+    path: f.path ?? null,
+    line: f.line ?? null,
+    title: f.title,
+    body: f.body ?? null,
+    fingerprint: prints[i],
+    dismissed: dismissed.has(prints[i]),
+  }));
 
   const blocking = findings.filter((f) => !f.dismissed && isBlocking(f.severity));
 
@@ -148,32 +275,118 @@ export async function runCommandReviewer(
       ...base,
       status: 'unavailable',
       unavailableReason: 'contradicted',
-      sha: parsed.doc.sha,
+      sha: reviewedSha,
       findings,
-      detail:
-        `exited ${run.exitCode} but its document reports no blocking findings — the ` +
-        `provider's own signals contradict each other: the exit code says it failed, the ` +
-        `document says it is clean`,
+      // The refusal note travels here too. This return is an early exit, and
+      // an over-matching dismissal is the one thing telling the author their
+      // `dismiss:` entry is dead — losing it because the provider also
+      // contradicted itself would hide a config defect behind a run defect.
+      //
+      // stderr matters MORE here than on `crashed`, not less. This is the
+      // path a provider reaches by printing a usable document and failing —
+      // `codex: context_length_exceeded` on stderr is the whole diagnosis,
+      // and dropping it leaves a generic contradiction sentence. The shipped
+      // example tells providers to narrate on stderr for exactly this.
+      detail: withStderr(
+        [
+          `exited ${run.exitCode} but its document reports no blocking findings — the ` +
+            `provider's own signals contradict each other: the exit code says it failed, the ` +
+            `document says it is clean`,
+          ...(overmatched.length > 0 ? [refusalNote(overmatched)] : []),
+          // Same class as the refusal, and stranded here by the first pass:
+          // a dismissal that LANDED on an id-less finding is a config defect
+          // the author needs regardless of why this particular run failed.
+          ...(idlessNote(findings) ? [idlessNote(findings)!] : []),
+        ].join('. '),
+        run.stderr,
+      ),
     });
   }
 
   // A dismissal that matches nothing is usually a finding that was genuinely
-  // fixed, so this is a warning rather than an error — erroring would punish
-  // the good outcome. It is never SILENT: an accumulating dismissal list is
-  // how a future real finding gets pre-suppressed by accident.
+  // fixed. It is a warning rather than an error — erroring would punish the
+  // good outcome — but never SILENT: an accumulating dismissal list is how a
+  // future real finding gets pre-suppressed by accident.
+  //
+  // NOT phrased as an instruction to delete, which is what it used to say.
+  // "(delete them)" is sound advice for a deterministic provider and wrong
+  // for a model, whose findings come and go between runs on identical input:
+  // a dismissal that missed today may be the only thing standing between the
+  // same finding and a blocked merge tomorrow, and a reader who followed the
+  // imperative made a change that breaks later.
   const seen = new Set(findings.map((f) => f.fingerprint));
   const unmatched = rev.dismiss.filter((d) => !seen.has(d.fingerprint)).map((d) => d.fingerprint);
-  const detail =
-    unmatched.length > 0
-      ? `dismissals matching nothing at head (delete them): ${unmatched.join(', ')}`
-      : null;
+
+  const notes: string[] = [];
+  if (overmatched.length > 0) notes.push(refusalNote(overmatched));
+
+  /**
+   * A dismissal that LANDED on an id-less finding. The dangerous direction,
+   * and until now the silent one.
+   *
+   * The over-match refusal above only sees collisions WITHIN ONE DOCUMENT —
+   * it counts fingerprints in this run. But title-derived identity collides
+   * across runs just as readily, and there rloop has no memory: one id-less
+   * finding plus a `dismiss:` entry an operator wrote last week for a
+   * different defect the model worded the same way is `occurrences === 1`, no
+   * refusal, no miss, and therefore no warning at all. Measured before this
+   * note existed: `clean`, `detail: null`, zero blockers.
+   *
+   * Note the asymmetry it corrects. rloop already warns when a dismissal
+   * MISSES — the safe direction, where a finding blocks that should not have.
+   * The HIT on a title-derived fingerprint is the merge-permitting direction
+   * and said nothing. This does not refuse (a linter with stable rule text and
+   * no ids is a legitimate, common shape, and refusing would break it), but
+   * `detail` is never null on this path again: the merge stops being permitted
+   * by the absence of a sentence.
+   */
+  const idless = idlessNote(findings);
+  if (idless) notes.push(idless);
+  if (unmatched.length > 0) notes.push(unmatchedDetail(unmatched, findings));
+  const detail = notes.length > 0 ? notes.join('. ') : null;
 
   return assertReasonCoupling({
     ...base,
     status: blocking.length > 0 ? 'findings' : 'clean',
-    sha: parsed.doc.sha,
+    sha: reviewedSha,
     findings,
     detail,
     findingsReason: blocking.length > 0 ? 'provider_findings' : null,
   });
+}
+
+/** Kept as one string so the `contradicted` early return and the normal return cannot drift. */
+const refusalNote = (overmatched: string[]) =>
+  `dismissal(s) REFUSED because their fingerprint matches more than one finding: ` +
+  `${overmatched.join(', ')}. A dismissal covers one finding; rloop cannot tell which ` +
+  `of several you read. Have the provider emit a distinct "id" per finding`;
+
+/**
+ * Why a dismissal missed, when rloop can tell.
+ *
+ * The interesting case is a provider whose findings carry no `id`. Identity
+ * then falls back to `path` + normalized `title` (see `fingerprint.ts`), which
+ * is stable for a linter with fixed rule text and is NOT stable for a model:
+ * one defect reworded across three runs is three fingerprints, so every
+ * `dismiss:` entry silently stops matching while the config still looks
+ * configured. That is worth naming at the moment of the miss, because it is
+ * indistinguishable by inspection from the healthy case where the finding was
+ * simply fixed.
+ */
+function unmatchedDetail(unmatched: string[], findings: Finding[]): string {
+  const lead =
+    `dismissals matching nothing at head: ${unmatched.join(', ')} — either the finding ` +
+    `is fixed, or it did not recur this run`;
+  // ANY id-less finding is the hazard, not only an all-id-less report. This
+  // used to be `findings.some((f) => f.id !== null)`, which went quiet the
+  // moment one finding carried an id — so a model that managed an id for a
+  // minor and dropped it for the critical got no warning about the one that
+  // matters. Mixed output is the EXPECTED shape from a model.
+  const idless = findings.filter((f) => f.id === null);
+  if (idless.length === 0) return lead;
+  return (
+    `${lead}. ${idless.length} of ${findings.length} finding(s) carried no "id", so their ` +
+    `fingerprints come from the title text — those cannot be dismissed reliably across a ` +
+    `run that rewords them`
+  );
 }

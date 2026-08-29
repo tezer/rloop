@@ -222,6 +222,60 @@ gates:
     expect(codes(d)).toContain('gates_not_green');
   });
 
+  it('does not blame --only when the operator skipped gates instead', async () => {
+    // `--skip-gates` models a void run, and merge-gate used to read its
+    // `partial: true` as "run was partial (--only), which is never a merge
+    // verdict" — naming a flag that was never passed and sending the operator
+    // to look for it. Both shapes block; only the sentence was wrong.
+    const c = cfg();
+    const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
+    const d = evaluateMergeGate({
+      cfg: c,
+      pr: pr(),
+      gateRun: greenRun({ green: false, partial: true, invalidatedBy: 'gates_skipped' }),
+      reviewerReports,
+      degradation,
+      threads: [],
+    });
+    const message = d.blockers.find((b) => b.code === 'gates_not_green')?.message;
+    // The full sentence: `/skipped/` alone also matches the generic fallback
+    // `run was void (gates_skipped)`, so it could not detect the special case
+    // being deleted.
+    expect(message).toContain('gates were skipped, so there is no gate evidence at all');
+    expect(message).not.toMatch(/--only|run was void/);
+  });
+
+  it('still blocks a sha mismatch when gates were skipped — only the sentence changes', () => {
+    // Guards the exported contract. Suppressing this blocker on the skipped
+    // path let a direct caller of `evaluateMergeGate` merge at a commit the
+    // gates never verified: green: true + gates_skipped + mismatched sha
+    // returned `allowed: true, blockers: []`. Measured before the fix.
+    const c = cfg();
+    const d = evaluateMergeGate({
+      cfg: c,
+      pr: pr(),
+      gateRun: greenRun({ sha: OLD, invalidatedBy: 'gates_skipped' }),
+      reviewerReports: [
+        assertReasonCoupling({
+          name: 'copilot-pull-request-reviewer',
+          kind: 'forge',
+          status: 'clean',
+          sha: HEAD,
+          findings: [],
+          detail: null,
+          findingsReason: null,
+          unavailableReason: null,
+        }),
+      ],
+      degradation: null,
+      threads: [],
+    });
+    expect(codes(d)).toContain('sha_mismatch_gates');
+    expect(d.allowed).toBe(false);
+    const message = d.blockers.find((b) => b.code === 'sha_mismatch_gates')?.message;
+    expect(message).toContain('Gates were skipped');
+  });
+
   it('blocks a void gate run (dirty worktree)', async () => {
     const c = cfg();
     const { reviewerReports, degradation } = await reviewerInputs(c, HEAD, [review()]);
@@ -503,8 +557,8 @@ describe('reviewer reports', () => {
     // `unavailable` collapses three causes into one status (see
     // UnavailableReason in src/reviewers/types.ts). Only the first is
     // actually true to say "could not run" — the other two describe a
-    // process that DID run and even produced a document. Each case here
-    // pins the wording rloop actually shows for that cause.
+    // process that DID run. Each case here pins the wording rloop actually
+    // shows for that cause.
     const messageFor = (unavailableReason: ReviewerReport['unavailableReason'], detail: string) =>
       evaluateMergeGate({
         cfg: cfg(),
@@ -537,6 +591,7 @@ describe('reviewer reports', () => {
       expect(message).toContain('contradict');
       expect(message).toContain('produced a document');
     });
+
   });
 
   it('blocks a malformed reviewer separately from an unavailable one', () => {

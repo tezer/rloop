@@ -20,6 +20,16 @@ const short = (sha: string) => sha.slice(0, 7);
  * Sequential by design. Parallelism is an optimisation and no measurement
  * yet says it is needed; running unknown third-party commands concurrently
  * also multiplies whatever they do to the working tree.
+ *
+ * rloop does NOT supply the diff a `kind: command` reviewer reviews — the
+ * provider derives its own base. That is a known weakness rather than a
+ * design choice: working out the base, keeping the tracking ref current, and
+ * refusing a verdict computed from an incomplete diff are things rloop is
+ * better placed to do, and every provider re-deriving them gets a chance to
+ * get them wrong silently. A first attempt at moving them here was withdrawn
+ * from this release with nine defects against it, all in the git-interaction
+ * layer; see `examples/reviewers/README.md` for what a provider must
+ * therefore handle itself.
  */
 export async function collectReviewerReports(
   cfg: RloopConfig,

@@ -269,6 +269,28 @@ const commandReviewerSchema = z
     run: z.string().min(1),
     timeout_seconds: z.number().int().positive().max(3600).default(600),
     dismiss: z.array(dismissalSchema).default([]),
+
+    /**
+     * Let rloop supply `sha` when the document omits it.
+     *
+     * OFF by default, and opt-in per reviewer rather than global. The echo's
+     * job is to catch a CACHED document — one produced by an earlier run and
+     * replayed. For a process rloop spawned in this invocation that is a
+     * narrow window, which is why relaxing it is reasonable at all; it is not
+     * zero, because a provider is free to cache internally.
+     *
+     * The reason to want it: a model-backed provider either post-processes
+     * its own output to graft the sha in, or is asked to copy a 40-character
+     * hex string into a JSON field — and a model asked to copy a hex string
+     * will eventually not. That failure surfaces as `stale`, which reads as
+     * "review another commit" and sends the operator looking in the wrong
+     * place entirely.
+     *
+     * What this does NOT relax: a document that DOES carry a `sha` still has
+     * to carry the right one. "You need not echo it" is not "any sha will do".
+     */
+    inject_sha: z.boolean().default(false),
+
   })
   .strict();
 
