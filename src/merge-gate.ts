@@ -60,6 +60,9 @@ const short = (sha: string) => sha.slice(0, 7);
  *     mutation with the bot's node id and `union: true`). Every one returned
  *     success. NONE produced a timeline event, a pending request, or a review
  *     within five minutes.
+ *   - 2026-08-29 — the same on PR #6, three days later, on a fresh branch with
+ *     no prior review of any kind. Recorded because on 2026-08-26 waiting it
+ *     out as an outage was the reasonable read, and this says it is not one.
  *
  * Same repo, same account, same calls. So the cause is not a spelling or an
  * endpoint choice, and this deliberately does not name one — a first draft of

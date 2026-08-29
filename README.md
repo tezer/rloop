@@ -1028,17 +1028,21 @@ $ rloop pr request-review 1030
 ```
 
 That output is the honest report of a real failure mode, measured against GitHub
-Copilot on this repository across two days:
+Copilot on this repository:
 
 | When | What happened |
 |---|---|
 | 2026-08-25 | Three requests on PR #4 landed, each followed by a review |
 | 2026-08-26 | Four calls on PR #5 — REST with the bare login, REST with `[bot]`, REST as `Copilot`, and the GraphQL `requestReviews` mutation with the bot's node id and `union: true` — all returned success, and produced no timeline event, no pending request, and no review within five minutes |
+| 2026-08-29 | Same on PR #6, on a fresh branch with no prior review of any kind |
 
 Same repo, same account, same calls. So this is not a spelling or an endpoint
-choice, and rloop deliberately does not guess at the cause in its message.
-Whatever it is, it lives on the reviewer's side and rloop cannot fix it from
-here.
+choice, and rloop deliberately does not guess at the cause in its message. The
+three-day gap is worth reading carefully: on 2026-08-26 it was reasonable to
+wait this out as an outage, and the 2026-08-29 result says it is not one. That
+is a real answer, and rloop produced it by refusing to merge rather than by
+diagnosing anything — which is the whole posture. Whatever the cause is, it
+lives on the reviewer's side and rloop cannot fix it from here.
 
 What rloop can do is not pretend. `=` means that reviewer already reviewed the
 current head (success), `✓` means the request is pending, `✗` means the call
